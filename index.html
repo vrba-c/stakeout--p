@@ -134,6 +134,16 @@ dialog{border:1px solid var(--line);border-radius:14px;background:var(--surface)
 dialog::backdrop{background:rgba(0,0,0,.45)}
 @media (prefers-reduced-motion: reduce){*{transition:none!important}}
 @media (max-width:360px){.t-body{grid-template-columns:120px 1fr}.dial{width:120px;height:120px}.dist{font-size:42px}}
+
+.lbl{display:block;font-size:15px;color:var(--muted);margin-bottom:6px}
+.inp{width:100%;min-height:46px;border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:0 12px;font-family:var(--font-c);font-size:17px}
+.lgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.lgrid label span{display:block;font-size:14px;color:var(--muted);margin-bottom:4px}
+table.res{width:100%;border-collapse:collapse;margin-top:10px;font-family:var(--font-c);font-size:16px}
+table.res th{text-align:right;font-weight:600;color:var(--muted);font-size:14px;padding:4px 6px;border-bottom:1px solid var(--line)}
+table.res td{text-align:right;padding:6px;border-bottom:1px solid var(--line)}
+table.res th:first-child,table.res td:first-child{text-align:left}
+table.res tr.bad td{color:var(--lost);font-weight:700}
 </style></head><body>
 <header class="status">
   <div class="wrap">
@@ -190,6 +200,33 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
       <div class="field"><span style="display:block;font-size:15px;color:var(--muted);margin-bottom:6px">Column order after the point ID</span>
         <div class="seg"><button data-o="EN">Easting first</button><button data-o="NE">Northing first</button></div></div>
       <p class="note" id="datumnote"></p>
+    </div>
+    <div class="block" id="localbox" hidden>
+      <h2>Local grid link</h2>
+      <label class="field"><span>Known system the local grid is tied to</span><select id="lref"></select></label>
+      <div class="field" id="lwidthbox"><span class="lbl">Zone width</span>
+        <div class="seg"><button data-lw="3">3° zones</button><button data-lw="6">6° zones</button></div></div>
+      <div class="field"><span class="lbl">How to link it</span>
+        <div class="seg"><button data-lm="points">Common points</button><button data-lm="params">Parameters</button></div></div>
+      <div id="lpoints">
+        <p class="note" style="margin:0 0 8px">One point per line: ID, local easting and northing (same column order as your point file), then easting and northing in <span id="lrefname"></span>. Use 3 or more points to get a residual check.</p>
+        <textarea id="lptext" wrap="off" style="white-space:pre;overflow-x:auto" placeholder="GP1  100.000  200.000  411791.600  5656349.850&#10;GP2  350.000  200.000  412037.120  5656301.410&#10;GP3  350.000  500.000  412094.330  5656596.280"></textarea>
+        <button class="btn primary wide" id="lfit" style="margin-top:10px">Compute transformation</button>
+      </div>
+      <div id="lparams">
+        <div class="lgrid">
+          <label><span>Local origin E</span><input class="inp" id="lp_x0" inputmode="decimal"></label>
+          <label><span>Local origin N</span><input class="inp" id="lp_y0" inputmode="decimal"></label>
+          <label><span>Origin easting (known)</span><input class="inp" id="lp_E0" inputmode="decimal"></label>
+          <label><span>Origin northing (known)</span><input class="inp" id="lp_N0" inputmode="decimal"></label>
+          <label><span>Rotation</span><input class="inp" id="lp_rot" inputmode="decimal"></label>
+          <label><span>Scale (ppm)</span><input class="inp" id="lp_ppm" inputmode="decimal"></label>
+        </div>
+        <div class="seg" style="margin-top:10px"><button data-lu="gon">Rotation in gon</button><button data-lu="deg">Rotation in degrees</button></div>
+        <p class="note">Rotation is the grid bearing of the local north axis, clockwise from grid north. Scale 0 ppm means no scale change.</p>
+        <button class="btn primary wide" id="lapply" style="margin-top:10px">Apply parameters</button>
+      </div>
+      <div id="lresult" style="margin-top:4px"></div>
     </div>
     <div class="block">
       <h2>In the field</h2>
@@ -369,6 +406,86 @@ const S = {
 };
 const saveSet = () => store.set('settings', S.set);
 
+/* ---------- coordinate systems, incl. local site grid ---------- */
+const LOCAL = { short: 'Local grid', gk: false, local: true };
+S.set.local = Object.assign({ ref: 'utm33', width: 3, mode: 'points', pts: '', p: { x0: '0', y0: '0', E0: '', N0: '', rot: '0', unit: 'gon', ppm: '0' } }, S.set.local || {});
+let LT = null, FIT = null; // active local transformation, and the fit report for the Setup screen
+const isLocal = () => S.set.datum === 'local';
+const curD = () => isLocal() ? LOCAL : GEO.DATUMS[S.set.datum];
+const refD = () => GEO.DATUMS[S.set.local.ref];
+function refFix(E) { const D = refD(); return (!D.gk && E > 1e7) ? E - D.zone * 1e6 : E; } // strip UTM zone prefix
+function toWGS(E, N) {
+  if (!isLocal()) return GEO.gridToWGS(E, N, S.set.datum, S.set.width);
+  if (!LT) return null;
+  const L = S.set.local, g = GEO.gridToWGS(LT.tE + LT.a * E + LT.b * N, LT.tN - LT.b * E + LT.a * N, L.ref, L.width);
+  return { lat: g.lat, lon: g.lon, zone: 'L' };
+}
+function fromWGS(lat, lon, zone) {
+  if (!isLocal()) return GEO.wgsToGrid(lat, lon, S.set.datum, zone, S.set.width);
+  if (!LT) return null;
+  const L = S.set.local, r = GEO.wgsToGrid(lat, lon, L.ref, LT.zone, L.width);
+  const dE = r.E - LT.tE, dN = r.N - LT.tN, s2 = LT.a * LT.a + LT.b * LT.b;
+  return { E: (LT.a * dE - LT.b * dN) / s2, N: (LT.b * dE + LT.a * dN) / s2, zone: 'L', ref: r };
+}
+const pnum = v => { const n = Number(String(v).trim().replace(',', '.')); return String(v).trim() === '' ? NaN : n; };
+function parseCommon(text) {
+  const rows = [];
+  let bad = 0;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim(); if (!line || line.startsWith('#')) continue;
+    const { toks, dc } = splitLine(line);
+    const T = toks.map(t => t.trim()).filter(Boolean), V = T.map(t => num(t, dc));
+    const nNum = V.filter(isFinite).length;
+    let id, vals;
+    if (!isFinite(V[0]) || nNum >= 5) { id = T[0]; vals = V.slice(1).filter(isFinite); }
+    else { id = 'CP' + (rows.length + 1); vals = V.filter(isFinite); }
+    if (vals.length < 4) { if (nNum) bad++; continue; }
+    let [x, y, E, N] = vals;
+    if (S.set.order === 'NE') [x, y] = [y, x];
+    rows.push({ id, x, y, E: refFix(E), N });
+  }
+  return { rows, bad };
+}
+function fitHelmert(rows) { // 4-parameter similarity, least squares on centred coordinates
+  const n = rows.length; if (n < 2) return null;
+  const m = k => rows.reduce((a, r) => a + r[k], 0) / n;
+  const mx = m('x'), my = m('y'), mE = m('E'), mN = m('N');
+  let sxx = 0, sa = 0, sb = 0;
+  for (const r of rows) {
+    const xc = r.x - mx, yc = r.y - my, Ec = r.E - mE, Nc = r.N - mN;
+    sxx += xc * xc + yc * yc; sa += xc * Ec + yc * Nc; sb += yc * Ec - xc * Nc;
+  }
+  if (sxx < 1e-6) return null;
+  const a = sa / sxx, b = sb / sxx, tE = mE - a * mx - b * my, tN = mN + b * mx - a * my;
+  const res = rows.map(r => { const vE = r.E - (tE + a * r.x + b * r.y), vN = r.N - (tN - b * r.x + a * r.y); return { id: r.id, vE, vN, v: Math.hypot(vE, vN) }; });
+  const rms = Math.sqrt(res.reduce((t, r) => t + r.v * r.v, 0) / n);
+  return { a, b, tE, tN, mE, res, rms, n };
+}
+function paramsLT() {
+  const p = S.set.local.p, E0 = refFix(pnum(p.E0)), N0 = pnum(p.N0), x0 = pnum(p.x0) || 0, y0 = pnum(p.y0) || 0;
+  if (!isFinite(E0) || !isFinite(N0)) return null;
+  const th = (pnum(p.rot) || 0) * (p.unit === 'gon' ? Math.PI / 200 : Math.PI / 180), sc = 1 + (pnum(p.ppm) || 0) * 1e-6;
+  const a = sc * Math.cos(th), b = sc * Math.sin(th);
+  return { a, b, tE: E0 - a * x0 - b * y0, tN: N0 + b * x0 - a * y0, mE: E0 };
+}
+function buildLT() {
+  const L = S.set.local, D = refD();
+  LT = null; FIT = null;
+  if (L.mode === 'points') {
+    const { rows, bad } = parseCommon(L.pts || '');
+    const f = fitHelmert(rows);
+    FIT = { mode: 'points', rows, bad, f };
+    if (f && rows.length >= 3) { // does swapping local axes fit far better? (X-north convention)
+      const sw = fitHelmert(rows.map(r => ({ ...r, x: r.y, y: r.x })));
+      if (sw && f.rms > 0.05 && sw.rms < f.rms * 0.2) FIT.swapHint = true;
+    }
+    if (f) LT = f;
+  } else {
+    LT = paramsLT(); FIT = { mode: 'params', ok: !!LT };
+  }
+  if (LT) LT.zone = D.gk ? Math.floor(LT.mE / 1e6) : undefined;
+}
+
 /* ---------- formatting ---------- */
 function fmtDist(m) {
   if (m == null || !isFinite(m)) return '—';
@@ -427,7 +544,10 @@ function parsePoints(raw) {
     const T = toks.map(t => t.trim().replace(/^"|"$/g, '')).filter(t => t !== '');
     const V = T.map(t => num(t, dc));
     let k = -1;
-    for (let i = 0; i < V.length - 1; i++) if (Math.abs(V[i]) > 1e5 && Math.abs(V[i + 1]) > 1e5) { k = i; break; }
+    if (isLocal()) { // local values can be small, so rely on position: ID first when there are 3+ columns
+      const start = (!isFinite(V[0]) || T.length >= 3) ? 1 : 0;
+      for (let i = start; i < V.length - 1; i++) if (isFinite(V[i]) && isFinite(V[i + 1])) { k = i; break; }
+    } else for (let i = 0; i < V.length - 1; i++) if (Math.abs(V[i]) > 1e5 && Math.abs(V[i + 1]) > 1e5) { k = i; break; }
     if (k < 0) { skipped++; continue; }
     let E = V[k], N = V[k + 1];
     if (S.set.order === 'NE') [E, N] = [N, E];
@@ -435,7 +555,8 @@ function parsePoints(raw) {
     let H = null, rest = T.slice(k + 2);
     if (rest.length && isFinite(V[k + 2]) && Math.abs(V[k + 2]) < 10000) { H = V[k + 2]; rest = rest.slice(1); }
     try {
-      const g = GEO.gridToWGS(E, N, S.set.datum, S.set.width);
+      const g = toWGS(E, N);
+      if (!g) { out.push({ id, E, N, H, code: rest.join(' '), lat: null, lon: null, zone: 'L', i: out.length }); continue; }
       if (!isFinite(g.lat) || !isFinite(g.lon)) { skipped++; continue; }
       if (g.lat < 47 || g.lat > 55.5 || g.lon < 5.5 || g.lon > 15.5) outside++;
       out.push({ id, E, N, H, code: rest.join(' '), lat: g.lat, lon: g.lon, zone: g.zone, i: out.length });
@@ -556,7 +677,7 @@ const targetPt = () => S.points.find(p => p.id === S.target) || null;
 function setTarget(id) { S.target = id; store.set('target', id); S.zoom = 1; renderAll(); }
 function myGrid(zone) {
   if (!S.fix) return null;
-  return GEO.wgsToGrid(S.fix.lat, S.fix.lon, S.set.datum, zone, S.set.width);
+  return fromWGS(S.fix.lat, S.fix.lon, zone);
 }
 
 /* ---------- rendering ---------- */
@@ -580,7 +701,12 @@ function renderTarget() {
     setHTML($('tbody'), `<div class="empty"><strong>Pick a point to stake out</strong><p>${S.points.length} points loaded.</p><button class="btn primary" data-go="pts">Choose point</button></div>`);
     return;
   }
-  const d = S.set.datum, D = GEO.DATUMS[d];
+  const D = curD();
+  if (t.lat == null) {
+    $('tnav').hidden = true;
+    setHTML($('tbody'), `<div class="empty"><strong>Local grid not set up</strong><p>Your points are in a local grid. Link it to a known system in Setup, using common points or transformation parameters.</p><button class="btn primary" data-go="set">Set up local grid</button></div>`);
+    return;
+  }
   let head = `<div class="t-head"><div class="t-id">${esc(t.id)}</div><div class="t-meta">${esc([t.code, t.H != null ? 'H ' + t.H.toFixed(2) : ''].filter(Boolean).join(', '))}</div></div>`;
   let body, warn = '';
   if (!S.fix) {
@@ -590,10 +716,10 @@ function renderTarget() {
     const dE = t.E - g.E, dN = t.N - g.N, dist = Math.hypot(dE, dN);
     const [dv, du] = distParts(dist);
     const ea = effAcc();
-    if (dist <= Math.max(ea, 0.5) && fixState() === 'live') box.classList.add('arrived');
+    if (dist <= Math.max(S.fix.acc, 0.5) && fixState() === 'live') box.classList.add('arrived');
     body = `<div class="t-body"><svg class="dial" id="dial" viewBox="-80 -80 160 160" role="img" aria-label="Direction to point"></svg>
       <div><div class="dist">${dv}<small>${du}</small></div>
-      <div class="deltas"><div>${fmtDist(Math.abs(dN))} <span>${dN >= 0 ? 'north' : 'south'}</span></div><div>${fmtDist(Math.abs(dE))} <span>${dE >= 0 ? 'east' : 'west'}</span></div></div></div></div>`;
+      <div class="deltas"><div>${fmtDist(Math.abs(dN))} <span>${D.local ? 'along local ' + (dN >= 0 ? '+N' : '−N') : dN >= 0 ? 'north' : 'south'}</span></div><div>${fmtDist(Math.abs(dE))} <span>${D.local ? 'along local ' + (dE >= 0 ? '+E' : '−E') : dE >= 0 ? 'east' : 'west'}</span></div></div></div></div>`;
     const s = fixState();
     if (s !== 'live') warn = `<p class="t-warn ${s === 'lost' ? 'lost' : ''}">Position is ${Math.round(fixAge())} s old and could be off by ±${Math.round(ea)} m. Distances are frozen until GPS returns.</p>`;
     else if (box.classList.contains('arrived')) warn = `<p class="t-warn" style="background:color-mix(in srgb,var(--live) 14%,var(--surface))">You're within GPS accuracy of this point (±${S.fix.acc.toFixed(1)} m).</p>`;
@@ -608,10 +734,10 @@ function drawDial() {
   const t = targetPt(), hd = currentHeading();
   const rot = hd ? -hd.h : 0;
   let arrow = '';
-  if (t && S.fix) {
-    const g = myGrid(GEO.DATUMS[S.set.datum].gk ? t.zone : undefined);
+  if (t && S.fix && t.lat != null) {
+    const g = myGrid(curD().gk ? t.zone : undefined);
     const dist = Math.hypot(t.E - g.E, t.N - g.N);
-    if (dist <= Math.max(effAcc(), 0.5) && fixState() === 'live') {
+    if (dist <= Math.max(S.fix.acc, 0.5) && fixState() === 'live') {
       arrow = `<circle r="30" fill="none" stroke="var(--live)" stroke-width="6"/><circle r="12" fill="var(--live)"/>`;
     } else {
       const b = bearing(S.fix, t);
@@ -627,7 +753,7 @@ function drawDial() {
     <text x="0" y="72" dy="-8" text-anchor="middle" font-size="11" fill="var(--muted)" font-family="var(--font-c)">${hd ? (hd.src === 'compass' ? 'compass' : 'walking direction') : 'north up'}</text>`;
 }
 function renderMe() {
-  const dl = $('mecoords'), D = GEO.DATUMS[S.set.datum];
+  const dl = $('mecoords'), D = curD();
   if (!S.fix) {
     $('mehead').textContent = 'Your position';
     setHTML(dl, `<dd style="grid-column:1/-1;font-size:16px;font-weight:500;text-align:left">${esc(S.lastErr || 'Waiting for the first GPS fix. Open sky helps.')}</dd>`
@@ -636,8 +762,9 @@ function renderMe() {
   }
   const t = targetPt();
   const g = myGrid(D.gk && t ? t.zone : undefined);
-  $('mehead').textContent = `Your position in ${D.short}${D.gk ? ' zone ' + g.zone : ''}`;
-  let h = `<dt>Easting</dt><dd>${f3(g.E)}</dd><dt>Northing</dt><dd>${f3(g.N)}</dd>`;
+  $('mehead').textContent = !g ? 'Your position' : `Your position in ${D.local ? 'the local grid' : D.short}${D.gk ? ' zone ' + g.zone : ''}`;
+  let h = g ? `<dt>Easting</dt><dd>${f3(g.E)}</dd><dt>Northing</dt><dd>${f3(g.N)}</dd>` : `<dd style="grid-column:1/-1;text-align:left;font-size:15px;font-weight:500">Set up the local grid in Setup to see local coordinates.</dd>`;
+  if (g && g.ref) h += `<dt>${esc(refD().short)}</dt><dd style="font-size:16px">${g.ref.E.toFixed(2)}, ${g.ref.N.toFixed(2)}</dd>`;
   h += `<dt>WGS84</dt><dd style="font-size:16px">${S.fix.lat.toFixed(7)}, ${S.fix.lon.toFixed(7)}</dd>`;
   if (S.fix.alt != null) h += `<dt>GPS height</dt><dd style="font-size:16px">${S.fix.alt.toFixed(1)} m${S.fix.altAcc ? ' ±' + Math.round(S.fix.altAcc) : ''}</dd>`;
   dl.innerHTML = h;
@@ -653,16 +780,17 @@ function renderList() {
     return;
   }
   $('listblock').hidden = false;
-  const D = GEO.DATUMS[S.set.datum];
-  let msg = `${S.points.length} points from ${esc(S.fileName || 'pasted text')} in ${esc(D.short)}.`;
-  if (S.skipped) msg += ` ${S.skipped} lines skipped (no coordinate pair).`;
+  const D = curD();
+  let msg = `${S.points.length} points from ${esc(S.fileName || 'pasted text')} in ${esc(D.local ? 'the local grid' : D.short)}.`;
+  if (S.skipped) msg += ` ${S.skipped} line${S.skipped === 1 ? '' : 's'} skipped (no coordinate pair).`;
   sum.className = 'summary';
+  if (D.local && !LT) { msg += ` The local grid isn't linked to a known system yet, so distances can't be shown. Set it up in Setup.`; sum.className = 'summary warn'; }
   if (S.outside) { msg += ` ${S.outside} points land outside Germany. Check the coordinate system and column order in Setup.`; sum.className = 'summary warn'; }
   sum.innerHTML = msg;
   let pts = S.points;
   if (q) pts = pts.filter(p => p.id.toLowerCase().includes(q) || p.code.toLowerCase().includes(q));
-  const withD = pts.map(p => ({ p, d: S.fix ? haversine(S.fix, p) : null }));
-  if (S.fix) withD.sort((a, b) => a.d - b.d);
+  const withD = pts.map(p => ({ p, d: S.fix && p.lat != null ? haversine(S.fix, p) : null }));
+  if (S.fix && withD.every(w => w.d != null)) withD.sort((a, b) => a.d - b.d);
   const MAX = 300;
   S._listAt = S.fix ? { lat: S.fix.lat, lon: S.fix.lon } : null;
   setHTML(ul, withD.slice(0, MAX).map(({ p, d }) =>
@@ -672,13 +800,17 @@ function renderList() {
 }
 function renderSetup() {
   const sel = $('datum');
-  if (!sel.options.length) sel.innerHTML = Object.entries(GEO.DATUMS).map(([k, d]) => `<option value="${k}">${esc(d.label)}</option>`).join('');
+  if (!sel.options.length) {
+    sel.innerHTML = Object.entries(GEO.DATUMS).map(([k, d]) => `<option value="${k}">${esc(d.label)}</option>`).join('') + '<option value="local">Local site grid</option>';
+    $('lref').innerHTML = Object.entries(GEO.DATUMS).map(([k, d]) => `<option value="${k}">${esc(d.label)}</option>`).join('');
+  }
   sel.value = S.set.datum;
-  const D = GEO.DATUMS[S.set.datum];
-  $('widthbox').hidden = !D.gk || S.set.datum !== 's4283';
+  const D = curD();
+  $('widthbox').hidden = S.set.datum !== 's4283';
+  renderLocalSetup();
   document.querySelectorAll('[data-w]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.w === S.set.width)));
   document.querySelectorAll('[data-o]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.o === S.set.order)));
-  $('datumnote').textContent = D.gk
+  $('datumnote').textContent = D.local ? 'Your point file is in a local site grid. Link it to a known system below.' : D.gk
     ? `Zone is read from the first digit of each easting (4xxxxxx = zone 4). Datum shift accuracy ${D.acc}, well below phone GPS error.`
     : 'Eastings with the zone prefix (e.g. 33412345.67) are accepted.';
   $('wake').checked = !!S.set.wake; $('rec').checked = !!S.rec; $('compass').checked = compassOn;
@@ -686,6 +818,69 @@ function renderSetup() {
   $('exlog').textContent = `Logged positions (${S.logged.length})`;
   $('extrack').textContent = `Track (${S.track.length})`;
 }
+
+/* ---------- local grid setup ---------- */
+function renderLocalSetup() {
+  const box = $('localbox'); box.hidden = !isLocal(); if (box.hidden) return;
+  const L = S.set.local, D = refD();
+  $('lref').value = L.ref;
+  $('lwidthbox').hidden = L.ref !== 's4283';
+  document.querySelectorAll('[data-lw]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.lw === L.width)));
+  document.querySelectorAll('[data-lm]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lm === L.mode)));
+  $('lpoints').hidden = L.mode !== 'points'; $('lparams').hidden = L.mode !== 'params';
+  $('lrefname').textContent = D.short;
+  for (const k of ['x0', 'y0', 'E0', 'N0', 'rot', 'ppm']) { const el = $('lp_' + k); if (document.activeElement !== el) el.value = L.p[k]; }
+  document.querySelectorAll('[data-lu]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lu === L.p.unit)));
+  if (document.activeElement !== $('lptext')) $('lptext').value = L.pts;
+  const out = $('lresult');
+  if (!FIT) { setHTML(out, ''); return; }
+  const mm = v => (Math.abs(v) < 0.0005 ? 0 : v).toFixed(3);
+  const gon = r => (((r * 200 / Math.PI) % 400) + 400) % 400;
+  const desc = T => { const sc = Math.hypot(T.a, T.b), th = Math.atan2(T.b, T.a);
+    return `Scale ${((sc - 1) * 1e6 >= 0 ? '+' : '') + ((sc - 1) * 1e6).toFixed(1)} ppm. Local north axis points ${gon(th).toFixed(4)} gon (${(gon(th) * 0.9).toFixed(4)}°) clockwise from grid north.`; };
+  let h = '';
+  if (FIT.mode === 'points') {
+    const { rows, f, bad } = FIT;
+    if (!rows.length) h = `<p class="note">Add at least 2 common points, then tap Compute transformation.</p>`;
+    else if (!f) h = `<p class="summary warn">Need at least 2 different points to compute the link. ${rows.length} usable line${rows.length === 1 ? '' : 's'} found.</p>`;
+    else {
+      const sc = Math.abs((Math.hypot(f.a, f.b) - 1) * 1e6);
+      h = `<p class="summary">Linked to ${esc(D.short)} from ${f.n} points. ${desc(f)}</p>`;
+      if (f.n === 2) h += `<p class="note">Two points always fit exactly, so there's no check. Add a third point to see residuals.</p>`;
+      else {
+        const worst = Math.max(...f.res.map(r => r.v));
+        h += `<p class="summary">RMS residual ${f.rms.toFixed(3)} m, largest ${worst.toFixed(3)} m.</p>`;
+        h += `<table class="res"><thead><tr><th>Point</th><th>vE</th><th>vN</th><th>Total</th></tr></thead><tbody>` +
+          f.res.map(r => `<tr class="${r.v > Math.max(0.03, 3 * f.rms) && r.v === worst ? 'bad' : ''}"><td>${esc(r.id)}</td><td>${mm(r.vE)}</td><td>${mm(r.vN)}</td><td>${mm(r.v)}</td></tr>`).join('') + `</tbody></table>`;
+      }
+      if (FIT.swapHint) h += `<p class="summary warn">The local axes look swapped. Try "Northing first" for the column order above.</p>`;
+      if (sc > 2000) h += `<p class="summary warn">Scale is off by ${Math.round(sc)} ppm. Check the units, the column order and the known system.</p>`;
+    }
+    if (bad) h += `<p class="note">${bad} line${bad === 1 ? '' : 's'} skipped: each needs an ID, two local and two known coordinates.</p>`;
+  } else {
+    if (!FIT.ok) h = `<p class="note">Enter the known-system easting and northing of the local origin, then tap Apply parameters.</p>`;
+    else {
+      h = `<p class="summary">Linked to ${esc(D.short)}. ${desc(LT)}</p>`;
+      const p0 = S.points.find(p => p.lat != null);
+      if (p0) h += `<p class="note">Check: point ${esc(p0.id)} maps to E ${(LT.tE + LT.a * p0.E + LT.b * p0.N).toFixed(3)}, N ${(LT.tN - LT.b * p0.E + LT.a * p0.N).toFixed(3)} in ${esc(D.short)}. Compare it with a known value before relying on it.</p>`;
+    }
+  }
+  setHTML(out, h);
+}
+function relink(msg) {
+  saveSet(); buildLT();
+  if (S.raw) loadRaw(S.raw, S.fileName); else renderAll();
+  if (msg && LT) toast(msg);
+}
+$('lref').onchange = e => { S.set.local.ref = e.target.value; S.set.local.width = e.target.value === 's4283' ? 6 : 3; relink(); };
+document.querySelectorAll('[data-lw]').forEach(b => b.onclick = () => { S.set.local.width = +b.dataset.lw; relink(); });
+document.querySelectorAll('[data-lm]').forEach(b => b.onclick = () => { S.set.local.mode = b.dataset.lm; relink(); });
+document.querySelectorAll('[data-lu]').forEach(b => b.onclick = () => { S.set.local.p.unit = b.dataset.lu; renderLocalSetup(); });
+$('lfit').onclick = () => { S.set.local.pts = $('lptext').value; relink('Local grid linked'); if (!LT) toast('Could not compute. See the message below.'); };
+$('lapply').onclick = () => {
+  for (const k of ['x0', 'y0', 'E0', 'N0', 'rot', 'ppm']) S.set.local.p[k] = $('lp_' + k).value.trim();
+  relink('Local grid linked'); if (!LT) toast('Enter the easting and northing of the local origin.');
+};
 
 /* ---------- plot ---------- */
 function drawPlot() {
@@ -697,10 +892,10 @@ function drawPlot() {
   const css = getComputedStyle(document.documentElement), C = n => css.getPropertyValue(n).trim();
   ctx.clearRect(0, 0, W, H);
   const t = targetPt();
-  const origin = S.fix || t || S.points[0];
+  const origin = S.fix || (t && t.lat != null ? t : null) || S.points.find(p => p.lat != null);
   if (!origin) { ctx.fillStyle = C('--muted'); ctx.font = `15px ${C('--font')}`; ctx.fillText('Your position and points appear here.', 16, H / 2); $('scale').textContent = ''; return; }
   let reach = 10;
-  if (S.fix && t) reach = Math.max(reach, haversine(S.fix, t) * 1.2);
+  if (S.fix && t && t.lat != null) reach = Math.max(reach, haversine(S.fix, t) * 1.2);
   if (S.fix) reach = Math.max(reach, effAcc() * 1.3);
   reach /= S.zoom;
   const ppm = (Math.min(W, H) / 2 - 18) / reach;
@@ -723,6 +918,7 @@ function drawPlot() {
   ctx.font = `600 13px ${C('--font-c')}`;
   let drawn = 0;
   for (const p of S.points) {
+    if (p.lat == null) continue;
     const [x, y] = P(p);
     if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
     if (++drawn > 600) break;
@@ -735,7 +931,7 @@ function drawPlot() {
   ctx.fillStyle = C('--live');
   for (const l of S.logged) { const [x, y] = P(l); ctx.fillRect(x - 3, y - 3, 6, 6); }
   // target
-  if (t) {
+  if (t && t.lat != null) {
     const [x, y] = P(t);
     if (S.fix) { const [mx, my] = P(S.fix); ctx.setLineDash([6, 5]); ctx.strokeStyle = C('--flag'); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(x, y); ctx.stroke(); ctx.setLineDash([]); }
     ctx.fillStyle = C('--flag'); ctx.beginPath(); ctx.arc(x, y, 8, 0, 7); ctx.fill();
@@ -780,9 +976,9 @@ function startLog() {
 let dl = null;
 if (window.claude && typeof window.claude.use === 'function') window.claude.use('downloads').then(d => { dl = d; }).catch(() => { });
 function csvRows(rows) {
-  const D = GEO.DATUMS[S.set.datum];
+  const D = curD();
   const t = targetPt(), zone = D.gk ? (t ? t.zone : undefined) : undefined;
-  return rows.map(r => { const g = GEO.wgsToGrid(r.lat, r.lon, S.set.datum, zone, S.set.width); return { r, g }; });
+  return rows.map(r => { const g = fromWGS(r.lat, r.lon, zone) || { E: NaN, N: NaN, zone: '' }; return { r, g }; });
 }
 function iso(t) { return new Date(t).toISOString(); }
 async function exportText(name, text) {
@@ -800,16 +996,16 @@ async function exportText(name, text) {
 }
 $('exlog').onclick = () => {
   if (!S.logged.length) { toast('No logged positions yet. Use Log position on the Stake out tab.'); return; }
-  const D = GEO.DATUMS[S.set.datum];
+  const D = curD();
   const lines = ['id;easting;northing;zone;system;lat_wgs84;lon_wgs84;gps_acc_m;fixes;spread_m;near_point;time_utc'];
-  for (const { r, g } of csvRows(S.logged)) lines.push([r.id, f3(g.E), f3(g.N), g.zone, D.short, r.lat.toFixed(8), r.lon.toFixed(8), r.acc, r.n, r.spread, r.near, iso(r.t)].join(';'));
+  for (const { r, g } of csvRows(S.logged)) lines.push([r.id, (isFinite(g.E) ? f3(g.E) : ''), (isFinite(g.N) ? f3(g.N) : ''), g.zone === 'L' ? 'local' : g.zone, D.short, r.lat.toFixed(8), r.lon.toFixed(8), r.acc, r.n, r.spread, r.near, iso(r.t)].join(';'));
   exportText('logged-positions.csv', lines.join('\n'));
 };
 $('extrack').onclick = () => {
   if (!S.track.length) { toast('No track recorded yet. Turn on Record track.'); return; }
-  const D = GEO.DATUMS[S.set.datum];
+  const D = curD();
   const lines = ['time_utc;easting;northing;zone;system;lat_wgs84;lon_wgs84;gps_acc_m'];
-  for (const { r, g } of csvRows(S.track)) lines.push([iso(r.t), f3(g.E), f3(g.N), g.zone, D.short, r.lat.toFixed(8), r.lon.toFixed(8), r.acc].join(';'));
+  for (const { r, g } of csvRows(S.track)) lines.push([iso(r.t), (isFinite(g.E) ? f3(g.E) : ''), (isFinite(g.N) ? f3(g.N) : ''), g.zone === 'L' ? 'local' : g.zone, D.short, r.lat.toFixed(8), r.lon.toFixed(8), r.acc].join(';'));
   exportText('track.csv', lines.join('\n'));
 };
 $('copybtn').onclick = async () => {
@@ -847,9 +1043,9 @@ $('file').onchange = e => {
 $('pastebtn').onclick = () => { const b = $('pastebox'); b.hidden = !b.hidden; if (!b.hidden) $('pastetext').focus(); };
 $('pasteok').onclick = () => { const v = $('pastetext').value; if (!v.trim()) { toast('Paste some coordinates first.'); return; } loadRaw(v, 'pasted text'); $('pastebox').hidden = true; };
 $('filter').oninput = renderList;
-$('datum').onchange = e => { S.set.datum = e.target.value; if (S.set.datum === 's4283') S.set.width = 6; else S.set.width = 3; saveSet(); if (S.raw) loadRaw(S.raw, S.fileName); else renderAll(); };
+$('datum').onchange = e => { S.set.datum = e.target.value; if (S.set.datum === 's4283') S.set.width = 6; else if (S.set.datum !== 'local') S.set.width = 3; saveSet(); if (S.raw) loadRaw(S.raw, S.fileName); else renderAll(); };
 document.querySelectorAll('[data-w]').forEach(b => b.onclick = () => { S.set.width = +b.dataset.w; saveSet(); if (S.raw) loadRaw(S.raw, S.fileName); else renderAll(); });
-document.querySelectorAll('[data-o]').forEach(b => b.onclick = () => { S.set.order = b.dataset.o; saveSet(); if (S.raw) loadRaw(S.raw, S.fileName); else renderAll(); });
+document.querySelectorAll('[data-o]').forEach(b => b.onclick = () => { S.set.order = b.dataset.o; relink(); });
 $('wake').onchange = e => { S.set.wake = e.target.checked; saveSet(); setWake(S.set.wake); };
 $('compass').onchange = e => setCompass(e.target.checked);
 $('rec').onchange = e => { S.rec = e.target.checked; store.set('rec', S.rec); if (!S.rec) store.set('track', S.track); renderSetup(); };
@@ -871,6 +1067,7 @@ function renderAll() { renderStatus(); renderTarget(); renderMe(); renderList();
 setInterval(renderLive, 1000);
 
 /* ---------- boot ---------- */
+buildLT();
 if (S.raw) { const r = parsePoints(S.raw); S.points = r.points; S.skipped = r.skipped; S.outside = r.outside; }
 renderAll();
 startGPS();
