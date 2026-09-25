@@ -173,7 +173,9 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
     <div class="block">
       <h2 id="mehead">Your position</h2>
       <dl class="coords" id="mecoords"><dt>Status</dt><dd>—</dd></dl>
+      <p class="note" id="extme" hidden></p>
       <div class="row" style="margin-top:14px"><button class="btn wide" id="logbtn">Log position (5 s average)</button></div>
+      <div class="row" style="margin-top:8px"><button class="btn wide" id="extquick" hidden></button></div>
       <p class="note" id="lognote"></p>
     </div>
   </section>
@@ -248,6 +250,12 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
       <div class="toggle"><div>Keep screen on<small>Stops the phone locking while you walk to a point</small></div><input type="checkbox" class="sw" id="wake"></div>
       <div class="toggle"><div>Use compass<small>Turns the arrow to match where you're facing. Unreliable next to steel and rebar.</small></div><input type="checkbox" class="sw" id="compass"></div>
       <div class="toggle"><div>Record track<small id="trackinfo">Saves your path on this phone</small></div><input type="checkbox" class="sw" id="rec"></div>
+    </div>
+    <div class="block">
+      <h2>GNSS receiver</h2>
+      <p class="note" style="margin:0 0 10px" id="extinfo"></p>
+      <div class="row"><button class="btn primary" id="extconnect">Connect receiver</button><button class="btn" id="extdisc">Disconnect</button></div>
+      <p class="note">For an RTK receiver with Bluetooth LE, such as a SparkFun RTK device. Set its Bluetooth mode to BLE or Dual, and let it fetch corrections itself (NTRIP client over your phone's hotspot). While it sends positions, the app uses them instead of the phone's GPS, and switches back to the phone if the receiver loses its fix. Needs Chrome on Android.</p>
     </div>
     <div class="block">
       <h2>Indoor tracking</h2>
@@ -635,10 +643,12 @@ function effAcc() { // grows while no update arrives (walking pace ~1.4 m/s)
   const a = fixAge();
   return S.fix.acc + (a > 3 ? 1.4 * (a - 3) : 0);
 }
-function onPos(p) {
+function onPos(p, src) {
+  if (src !== 'ext' && extFeeding()) return; // the receiver is sending positions: ignore the phone's own GPS
   const c = p.coords;
   S.lastErr = null; S.errCode = null;
-  S.fix = { lat: c.latitude, lon: c.longitude, acc: c.accuracy, alt: c.altitude, altAcc: c.altitudeAccuracy, speed: c.speed, course: c.heading, t: Date.now() };
+  S.fix = { lat: c.latitude, lon: c.longitude, acc: c.accuracy, alt: c.altitude, altAcc: c.altitudeAccuracy, speed: c.speed, course: c.heading, t: Date.now(),
+    src: src === 'ext' ? 'ext' : 'phone', q: src === 'ext' ? S.ext.q : null };
   if (S.rec) {
     const last = S.track[S.track.length - 1];
     if (!last || haversine(last, S.fix) > Math.max(1, S.fix.acc * 0.3) || Date.now() - last.t > 30000) {
@@ -647,7 +657,7 @@ function onPos(p) {
       if (S.track.length % 10 === 0) store.set('track', S.track);
     }
   }
-  if (S.logging) S.logging.samples.push({ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc });
+  if (S.logging) S.logging.samples.push({ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc, src: S.fix.src, q: S.fix.q });
   if (S.calib) S.calib.samples.push({ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc });
   renderLive();
 }
@@ -673,6 +683,122 @@ function retryGPS() { // called from a tap, which lets the browser show its perm
   S.errCode = null; S.lastErr = 'Asking for location…'; renderAll();
   try { navigator.geolocation.getCurrentPosition(onPos, onErr, GEO_OPTS); } catch { }
   startGPS();
+}
+
+/* ---------- external GNSS receiver over Bluetooth LE (NMEA in, e.g. SparkFun RTK Everywhere firmware) ---------- */
+const BLE_NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e', BLE_NUS_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Nordic UART, used by SparkFun RTK
+const BLE_HM10 = 0xffe0, BLE_HM10_CH = 0xffe1; // common serial-over-BLE modules
+const QTXT = { 0: 'No fix', 1: 'GPS', 2: 'DGPS', 3: 'GPS', 4: 'RTK fixed', 5: 'RTK float', 6: 'Estimated', 7: 'Manual', 8: 'Simulated' };
+S.ext = { dev: null, ch: null, state: 'off', want: false, name: '', buf: '', q: null, sats: null, hdop: null, age: null, gst: null, t: 0, posT: 0, tries: 0 };
+const extFeeding = () => S.ext.state === 'on' && Date.now() - S.ext.posT < 3000;
+function nmeaOk(line) {
+  const k = line.lastIndexOf('*'); if (k < 1) return false;
+  let c = 0; for (let i = 1; i < k; i++) c ^= line.charCodeAt(i);
+  return c === parseInt(line.slice(k + 1, k + 3), 16);
+}
+function nmeaDeg(v, h) {
+  if (!v) return NaN;
+  const x = parseFloat(v), d = Math.floor(x / 100), r = d + (x - d * 100) / 60;
+  return h === 'S' || h === 'W' ? -r : r;
+}
+function onNmea(line) {
+  if (!nmeaOk(line)) return;
+  const f = line.slice(1, line.lastIndexOf('*')).split(','), typ = f[0].slice(-3);
+  if (typ === 'GST') {
+    const sl = parseFloat(f[6]), so = parseFloat(f[7]);
+    if (isFinite(sl) && isFinite(so)) S.ext.gst = { h: Math.hypot(sl, so), v: parseFloat(f[8]), t: Date.now() };
+    return;
+  }
+  if (typ !== 'GGA') return;
+  const q = parseInt(f[6], 10) || 0;
+  S.ext.q = q; S.ext.sats = parseInt(f[7], 10) || 0; S.ext.hdop = parseFloat(f[8]); S.ext.age = f[13] ? parseFloat(f[13]) : null; S.ext.t = Date.now();
+  const lat = nmeaDeg(f[2], f[3]), lon = nmeaDeg(f[4], f[5]);
+  if (!q || !isFinite(lat) || !isFinite(lon)) { renderLive(); return; } // no fix: the phone's GPS takes over after 3 s
+  const g = S.ext.gst && Date.now() - S.ext.gst.t < 3000 && S.ext.gst.h > 0 ? S.ext.gst : null;
+  const acc = g ? Math.max(0.01, g.h) : ({ 4: 0.03, 5: 0.4, 2: 1, 6: 10 }[q] || Math.max(1.5, 2.5 * (S.ext.hdop || 2)));
+  const alt = f[9] ? parseFloat(f[9]) : null;
+  S.ext.posT = Date.now();
+  onPos({ coords: { latitude: lat, longitude: lon, accuracy: acc, altitude: alt, altitudeAccuracy: g && isFinite(g.v) ? g.v : null, speed: null, heading: null } }, 'ext');
+}
+const extDec = new TextDecoder();
+function extOnData(e) {
+  S.ext.buf += extDec.decode(e.target.value, { stream: true });
+  let i;
+  while ((i = S.ext.buf.indexOf('\n')) >= 0) {
+    const line = S.ext.buf.slice(0, i).trim(); S.ext.buf = S.ext.buf.slice(i + 1);
+    const d = line.indexOf('$'); if (d >= 0) onNmea(line.slice(d));
+  }
+  if (S.ext.buf.length > 4096) S.ext.buf = S.ext.buf.slice(-256);
+}
+async function extGatt() {
+  const dev = S.ext.dev; if (!dev) return;
+  S.ext.state = 'connecting'; renderAll();
+  try {
+    const srv = await dev.gatt.connect();
+    let ch;
+    try { ch = await (await srv.getPrimaryService(BLE_NUS)).getCharacteristic(BLE_NUS_TX); }
+    catch { ch = await (await srv.getPrimaryService(BLE_HM10)).getCharacteristic(BLE_HM10_CH); }
+    ch.addEventListener('characteristicvaluechanged', extOnData);
+    await ch.startNotifications();
+    S.ext.ch = ch; S.ext.state = 'on'; S.ext.buf = ''; S.ext.tries = 0; S.ext.t = Date.now();
+    S.set.extName = S.ext.name; saveSet();
+    toast(`Connected to ${S.ext.name}. Waiting for positions.`);
+  } catch (e) {
+    S.ext.state = 'off';
+    try { dev.gatt.disconnect(); } catch { }
+    if (S.ext.want && S.ext.tries < 8) { S.ext.tries++; setTimeout(() => { if (S.ext.want && S.ext.state === 'off') extGatt(); }, Math.min(15000, 2000 * S.ext.tries)); }
+    else { S.ext.want = false; toast(`Could not connect to ${S.ext.name}. Check it is on, in range and set to BLE or Dual Bluetooth, then tap Connect again.`); }
+  }
+  renderAll();
+}
+function extOnDisconnect() {
+  S.ext.state = 'off'; S.ext.ch = null; renderAll();
+  if (S.ext.want) { toast(`${S.ext.name} disconnected. Reconnecting…`); S.ext.tries = 0; setTimeout(() => { if (S.ext.want && S.ext.state === 'off') extGatt(); }, 1500); }
+}
+function extUse(dev) {
+  if (S.ext.dev && S.ext.dev !== dev) { try { S.ext.dev.removeEventListener('gattserverdisconnected', extOnDisconnect); S.ext.dev.gatt.disconnect(); } catch { } }
+  S.ext.dev = dev; S.ext.name = dev.name || 'Receiver'; S.ext.want = true; S.ext.tries = 0;
+  dev.removeEventListener('gattserverdisconnected', extOnDisconnect);
+  dev.addEventListener('gattserverdisconnected', extOnDisconnect);
+  return extGatt();
+}
+async function extConnect() {
+  if (!navigator.bluetooth) { toast('This browser cannot use Bluetooth. Open the app in Chrome on Android.'); return; }
+  let dev;
+  try {
+    dev = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [BLE_NUS] }, { services: [BLE_HM10] }, { namePrefix: 'Postcard' }, { namePrefix: 'RTK' }, { namePrefix: 'Facet' },
+        { namePrefix: 'Torch' }, { namePrefix: 'EVK' }, { namePrefix: 'SparkPNT' }],
+      optionalServices: [BLE_NUS, BLE_HM10],
+    });
+  } catch (e) {
+    if (e && e.name === 'NotFoundError') return; // chooser closed
+    toast(e && e.name === 'SecurityError' ? 'Bluetooth needs the app opened over https in Chrome.' : 'Bluetooth is off or not allowed for this site.');
+    return;
+  }
+  extUse(dev);
+}
+function extDisconnect() {
+  S.ext.want = false;
+  try { if (S.ext.dev) S.ext.dev.gatt.disconnect(); } catch { }
+  S.ext.state = 'off'; S.ext.ch = null; S.ext.posT = 0; renderAll();
+}
+async function extAutoReconnect() { // Chrome can hand back a receiver used before without a new chooser, where supported
+  if (!S.set.extName || !navigator.bluetooth || !navigator.bluetooth.getDevices) return;
+  try {
+    const dev = (await navigator.bluetooth.getDevices()).find(d => d.name === S.set.extName);
+    if (dev) { S.ext.tries = 6; extUse(dev); } // only a couple of quiet attempts
+  } catch { }
+}
+function extLine() { // one-line receiver status for the Setup and position screens
+  const x = S.ext;
+  if (x.state === 'connecting') return `Connecting to ${x.name}…`;
+  if (x.state !== 'on') return x.want ? `Reconnecting to ${x.name}…` : '';
+  if (Date.now() - x.t > 5000) return `${x.name} connected, but no data for ${Math.round((Date.now() - x.t) / 1000)} s.`;
+  const parts = [QTXT[x.q] || 'No fix', `${x.sats || 0} satellites`];
+  if (x.age != null && isFinite(x.age)) parts.push(`corrections ${x.age.toFixed(0)} s old`);
+  else if (x.q && x.q !== 4 && x.q !== 5) parts.push('no corrections');
+  return `${x.name}: ${parts.join(', ')}.`;
 }
 
 /* ---------- compass ---------- */
@@ -948,6 +1074,7 @@ function myGrid(zone) {
 }
 
 /* ---------- rendering ---------- */
+const arriveFloor = () => S.fix && S.fix.src === 'ext' && S.fix.acc < 0.2 ? 0.05 : 0.5;
 function renderStatus() {
   if (S.dr) {
     $('fixstate').dataset.s = 'dr';
@@ -957,10 +1084,10 @@ function renderStatus() {
   }
   const s = fixState(), fs = $('fixstate'); fs.dataset.s = s;
   const a = fixAge();
-  $('fixtext').textContent = s === 'live' ? 'Live GPS fix' : s === 'stale' ? `No update for ${Math.round(a)} s`
+  $('fixtext').textContent = s === 'live' ? (S.fix.src === 'ext' ? `${QTXT[S.fix.q] || 'GPS'} (receiver)` : 'Live GPS fix') : s === 'stale' ? `No update for ${Math.round(a)} s`
     : s === 'lost' ? (S.fix ? `Signal lost ${a < 120 ? Math.round(a) + ' s' : Math.round(a / 60) + ' min'} ago` : S.errCode === 1 ? 'Location blocked' : 'No GPS position') : 'Waiting for GPS';
   const ea = effAcc();
-  $('acc').innerHTML = ea == null ? '' : `±<b>${ea < 100 ? ea.toFixed(1) : Math.round(ea)}</b> m`;
+  $('acc').innerHTML = ea == null ? '' : `±<b>${ea < 1 ? ea.toFixed(2) : ea < 100 ? ea.toFixed(1) : Math.round(ea)}</b> m`;
 }
 function renderTarget() {
   const box = $('target'), t = targetPt();
@@ -991,7 +1118,7 @@ function renderTarget() {
     const dE = t.E - g.E, dN = t.N - g.N, dist = Math.hypot(dE, dN);
     const [dv, du] = distParts(dist);
     const ea = S.dr ? drAcc() : effAcc();
-    if (S.dr ? dist <= Math.max(ea, 0.5) : dist <= Math.max(S.fix.acc, 0.5) && fixState() === 'live') box.classList.add('arrived');
+    if (S.dr ? dist <= Math.max(ea, 0.5) : dist <= Math.max(S.fix.acc, arriveFloor()) && fixState() === 'live') box.classList.add('arrived');
     body = `<div class="t-body"><svg class="dial" id="dial" viewBox="-80 -80 160 160" role="img" aria-label="Direction to point"></svg>
       <div><div class="dist">${dv}<small>${du}</small></div>
       <div class="deltas"><div>${fmtDist(Math.abs(dN))} <span>${D.local ? 'along local ' + (dN >= 0 ? '+N' : '−N') : dN >= 0 ? 'north' : 'south'}</span></div><div>${fmtDist(Math.abs(dE))} <span>${D.local ? 'along local ' + (dE >= 0 ? '+E' : '−E') : dE >= 0 ? 'east' : 'west'}</span></div></div></div></div>`;
@@ -1000,7 +1127,7 @@ function renderTarget() {
       ? `<p class="t-warn" style="background:color-mix(in srgb,var(--live) 14%,var(--surface))">You should be at the point (tracking ±${ea.toFixed(1)} m). If you are, tap "I'm at ${esc(t.id)}".</p>`
       : `<p class="t-warn" style="background:color-mix(in srgb,var(--me) 12%,var(--surface))">Tracking from ${esc(S.dr.anchorId)} by steps and gyro: ${S.dr.seg.dist.toFixed(0)} m walked, about ±${ea.toFixed(1)} m.</p>`;
     else if (s !== 'live') warn = `<p class="t-warn ${s === 'lost' ? 'lost' : ''}">Position is ${Math.round(fixAge())} s old and could be off by ±${Math.round(ea)} m. Distances are frozen until GPS returns.</p>`;
-    else if (box.classList.contains('arrived')) warn = `<p class="t-warn" style="background:color-mix(in srgb,var(--live) 14%,var(--surface))">You're within GPS accuracy of this point (±${S.fix.acc.toFixed(1)} m).</p>`;
+    else if (box.classList.contains('arrived')) warn = `<p class="t-warn" style="background:color-mix(in srgb,var(--live) 14%,var(--surface))">You're within ${S.fix.src === 'ext' ? 'receiver' : 'GPS'} accuracy of this point (±${S.fix.acc < 1 ? S.fix.acc.toFixed(2) : S.fix.acc.toFixed(1)} m).</p>`;
     else if (S.fix.acc > 10) warn = `<p class="t-warn">GPS is weak here (±${Math.round(S.fix.acc)} m). Inside the building, stand on a known point and use "Track indoors".</p>`;
   }
   const i = t.i;
@@ -1016,7 +1143,7 @@ function drawDial() {
   if (t && (S.dr || (S.fix && t.lat != null))) {
     const g = myGrid(curD().gk ? t.zone : undefined);
     const dist = Math.hypot(t.E - g.E, t.N - g.N);
-    if (S.dr ? dist <= Math.max(drAcc(), 0.5) : dist <= Math.max(S.fix.acc, 0.5) && fixState() === 'live') {
+    if (S.dr ? dist <= Math.max(drAcc(), 0.5) : dist <= Math.max(S.fix.acc, arriveFloor()) && fixState() === 'live') {
       arrow = `<circle r="30" fill="none" stroke="var(--live)" stroke-width="6"/><circle r="12" fill="var(--live)"/>`;
     } else {
       const b = S.dr ? norm360(Math.atan2(t.E - g.E, t.N - g.N) * 180 / Math.PI) : bearing(S.fix, t);
@@ -1033,6 +1160,9 @@ function drawDial() {
 }
 function renderMe() {
   const dl = $('mecoords'), D = curD();
+  const el = extLine(); $('extme').hidden = !el; $('extme').textContent = el;
+  const qb = $('extquick'), showQ = !!S.set.extName && !!navigator.bluetooth && S.ext.state === 'off' && !S.ext.want;
+  qb.hidden = !showQ; if (showQ) qb.textContent = `Connect ${S.set.extName}`;
   if (S.dr) {
     $('mehead').textContent = `Your position by indoor tracking${D.local ? ' (local grid)' : ''}`;
     setHTML(dl, `<dt>Easting</dt><dd>${S.dr.E.toFixed(2)}</dd><dt>Northing</dt><dd>${S.dr.N.toFixed(2)}</dd>`
@@ -1051,8 +1181,9 @@ function renderMe() {
   $('mehead').textContent = !g ? 'Your position' : `Your position in ${D.local ? 'the local grid' : D.short}${D.gk ? ' zone ' + g.zone : ''}`;
   let h = g ? `<dt>Easting</dt><dd>${f3(g.E)}</dd><dt>Northing</dt><dd>${f3(g.N)}</dd>` : `<dd style="grid-column:1/-1;text-align:left;font-size:15px;font-weight:500">Set up the local grid in Setup to see local coordinates.</dd>`;
   if (g && g.ref) h += `<dt>${esc(refD().short)}</dt><dd style="font-size:16px">${g.ref.E.toFixed(2)}, ${g.ref.N.toFixed(2)}</dd>`;
+  if (S.fix.src === 'ext') h += `<dt>Source</dt><dd style="font-size:16px">${esc(QTXT[S.fix.q] || 'GPS')}, receiver</dd>`;
   h += `<dt>WGS84</dt><dd style="font-size:16px">${S.fix.lat.toFixed(7)}, ${S.fix.lon.toFixed(7)}</dd>`;
-  if (S.fix.alt != null) h += `<dt>GPS height</dt><dd style="font-size:16px">${S.fix.alt.toFixed(1)} m${S.fix.altAcc ? ' ±' + Math.round(S.fix.altAcc) : ''}</dd>`;
+  if (S.fix.alt != null) h += `<dt>GPS height</dt><dd style="font-size:16px">${S.fix.alt.toFixed(S.fix.src === 'ext' ? 3 : 1)} m${S.fix.altAcc ? ' ±' + (S.fix.altAcc < 1 ? S.fix.altAcc.toFixed(2) : Math.round(S.fix.altAcc)) : ''}</dd>`;
   dl.innerHTML = h;
 }
 function renderList() {
@@ -1123,6 +1254,9 @@ function renderSetup() {
   $('siteinfo').textContent = S.site ? `Loaded site: ${S.site.name}${S.site.created ? ', setup from ' + new Date(S.site.created).toLocaleDateString() : ''}.` : 'No site setup loaded on this phone.';
   if (document.activeElement !== $('steplen')) $('steplen').value = S.set.stepLen.toFixed(2);
   $('snap').checked = S.set.snap;
+  $('extinfo').textContent = !navigator.bluetooth ? 'This browser cannot use Bluetooth. Open the app in Chrome on Android.'
+    : extLine() || (S.set.extName ? `Not connected. Last used: ${S.set.extName}.` : 'No receiver connected.');
+  $('extconnect').disabled = S.ext.state === 'connecting'; $('extdisc').disabled = S.ext.state === 'off' && !S.ext.want;
   if (document.activeElement !== $('axis')) $('axis').value = fmtDeg(S.set.axis).replace('°', '');
   $('drratenote').textContent = `Current tracking error estimate: about ${(S.set.drRate * 100).toFixed(1)}% of distance walked since the last known point. It updates from your own "I'm at" checks.`;
   $('exchecks').textContent = `Indoor checks (${S.checks.length})`;
@@ -1347,7 +1481,7 @@ function startLog() {
   if (!S.fix || fixState() !== 'live') { toast('Needs a live GPS fix.'); return; }
   if (S.logging) return;
   const btn = $('logbtn');
-  S.logging = { samples: [{ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc }], t0: Date.now() };
+  S.logging = { samples: [{ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc, src: S.fix.src, q: S.fix.q }], t0: Date.now() };
   btn.disabled = true;
   const tick = () => {
     const left = 5 - Math.floor((Date.now() - S.logging.t0) / 1000);
@@ -1357,10 +1491,12 @@ function startLog() {
     const acc = sm.reduce((a, s) => a + s.acc, 0) / sm.length;
     const spread = Math.max(...sm.map(s => haversine({ lat, lon }, s)));
     const id = 'L' + String(S.logged.length + 1).padStart(3, '0');
-    S.logged.push({ id, lat, lon, acc: +acc.toFixed(2), n: sm.length, spread: +spread.toFixed(2), t: Date.now(), near: S.target || '' });
+    const rank = q => ({ 4: 0, 5: 1, 2: 2, 1: 3 }[q] ?? 4), ext = sm.every(v => v.src === 'ext');
+    const worst = ext ? sm.reduce((a, v) => rank(v.q) > rank(a) ? v.q : a, 4) : null;
+    S.logged.push({ id, lat, lon, acc: +acc.toFixed(3), n: sm.length, spread: +spread.toFixed(3), t: Date.now(), near: S.target || '', src: ext ? 'receiver' : 'phone', fixType: ext ? (QTXT[worst] || '') : '' });
     store.set('logged', S.logged);
     btn.disabled = false; btn.textContent = 'Log position (5 s average)';
-    $('lognote').textContent = `${id} saved from ${sm.length} fixes, spread ${spread.toFixed(2)} m, GPS accuracy ±${acc.toFixed(1)} m.`;
+    $('lognote').textContent = `${id} saved from ${sm.length} fixes${ext ? ' (' + QTXT[worst] + ', receiver)' : ''}, spread ${spread.toFixed(ext ? 3 : 2)} m, accuracy ±${acc < 1 ? acc.toFixed(3) : acc.toFixed(1)} m.`;
     renderSetup(); drawPlot();
   };
   tick();
@@ -1391,13 +1527,13 @@ async function exportText(name, text) {
 $('exlog').onclick = () => {
   if (!S.logged.length) { toast('No logged positions yet. Use Log position on the Stake out tab.'); return; }
   const D = curD();
-  const lines = ['id;easting;northing;zone;system;lat_wgs84;lon_wgs84;gps_acc_m;fixes;spread_m;near_point;known_easting;known_northing;dE_m;dN_m;offset_m;time_utc'];
+  const lines = ['id;easting;northing;zone;system;lat_wgs84;lon_wgs84;gps_acc_m;fixes;spread_m;near_point;known_easting;known_northing;dE_m;dN_m;offset_m;source;fix_type;time_utc'];
   for (const { r, g } of csvRows(S.logged)) {
     const k = r.near ? S.points.find(p => p.id === r.near) : null;
     const ok = k && isFinite(g.E) && String(k.zone) === String(g.zone);
     const dE = ok ? g.E - k.E : NaN, dN = ok ? g.N - k.N : NaN;
     lines.push([r.id, (isFinite(g.E) ? f3(g.E) : ''), (isFinite(g.N) ? f3(g.N) : ''), g.zone === 'L' ? 'local' : g.zone, D.short, r.lat.toFixed(8), r.lon.toFixed(8), r.acc, r.n, r.spread, r.near,
-      ok ? f3(k.E) : '', ok ? f3(k.N) : '', ok ? f3(dE) : '', ok ? f3(dN) : '', ok ? f3(Math.hypot(dE, dN)) : '', iso(r.t)].join(';'));
+      ok ? f3(k.E) : '', ok ? f3(k.N) : '', ok ? f3(dE) : '', ok ? f3(dN) : '', ok ? f3(Math.hypot(dE, dN)) : '', r.src || 'phone', r.fixType || '', iso(r.t)].join(';'));
   }
   exportText('logged-positions.csv', lines.join('\n'));
 };
@@ -1497,6 +1633,9 @@ $('rec').onchange = e => { S.rec = e.target.checked; store.set('rec', S.rec); if
 $('clrpts').onclick = () => { if (!confirm('Remove the imported points from this phone?')) return; S.raw = ''; S.points = []; S.target = null; S.site = null; store.set('raw', ''); store.set('target', null); store.set('site', null); renderAll(); };
 $('clrlog').onclick = () => { if (!confirm('Delete logged positions, indoor checks and the recorded track?')) return; S.logged = []; S.track = []; S.checks = []; store.set('logged', []); store.set('track', []); store.set('checks', []); renderAll(); };
 $('logbtn').onclick = startLog;
+$('extconnect').onclick = extConnect;
+$('extdisc').onclick = extDisconnect;
+$('extquick').onclick = extConnect;
 $('snap').onchange = e => { S.set.snap = e.target.checked; saveSet(); renderSetup(); };
 $('axis').addEventListener('change', e => { const v = pnum(e.target.value); if (isFinite(v)) { S.set.axis = normAxis(v); saveSet(); $('axisnote').textContent = ''; } else toast('Enter the axis bearing in degrees, for example 0 or 37.5.'); renderSetup(); });
 $('axisdetect').onclick = () => {
@@ -1552,6 +1691,7 @@ buildLT();
 if (S.raw) { const r = parsePoints(S.raw); S.points = r.points; S.skipped = r.skipped; S.outside = r.outside; }
 renderAll();
 startGPS();
+extAutoReconnect();
 if (S.set.wake) setWake(true);
 })();
 </script><script>if("serviceWorker" in navigator){navigator.serviceWorker.register("sw.js").catch(function(){})}</script></body></html>
