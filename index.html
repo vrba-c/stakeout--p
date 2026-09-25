@@ -252,12 +252,18 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
     <div class="block">
       <h2>Indoor tracking</h2>
       <label class="field" style="margin-bottom:6px"><span>Your step length (m)</span><input class="inp" id="steplen" inputmode="decimal"></label>
-      <p class="note">Adjusts itself each time you tap "I'm at" on a known point after walking 8 m or more. Hold the phone in front of you, screen up, while walking.</p>
+      <p class="note">Set it precisely with a calibration walk: tap "Track indoors" on a point, choose "Walk to another point instead" and walk straight to it. It also fine-tunes itself each time you tap "I'm at" after walking 8 m or more. Hold the phone in front of you, screen up, while walking.</p>
+      <div class="toggle" style="margin-top:6px;border-top:1px solid var(--line)"><div>Snap to building axes<small>Straightens your track along the building grid and removes gyro drift on straight runs. Turn off where corridors aren't at right angles.</small></div><input type="checkbox" class="sw" id="snap"></div>
+      <div style="margin:6px 0"><label class="lbl" for="axis">Building axis bearing (degrees, clockwise from the point file's north)</label>
+        <div class="row"><input class="inp" id="axis" inputmode="decimal" style="flex:1"><button class="btn" id="axisdetect" style="flex:0 0 auto;min-height:46px">Detect from points</button></div></div>
+      <p class="note" id="axisnote"></p>
+      <p class="note" id="drratenote"></p>
     </div>
     <div class="block">
       <h2>Export</h2>
       <div class="row"><button class="btn" id="exlog">Logged positions</button><button class="btn" id="extrack">Track</button></div>
-      <p class="note">CSV with ID, easting and northing in the coordinate system above, plus WGS84 lat/lon and GPS accuracy.</p>
+      <div class="row" style="margin-top:10px"><button class="btn" id="exchecks">Indoor checks</button></div>
+      <p class="note">CSV with ID, easting and northing in the coordinate system above, plus WGS84 lat/lon and GPS accuracy. Logged positions include the offset from the point you were navigating to. Indoor checks list every "I'm at" with the distance walked and how far off the tracking was.</p>
     </div>
     <div class="block">
       <h2>Share with the team</h2>
@@ -267,7 +273,7 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
     </div>
     <div class="block">
       <h2>Stored on this phone</h2>
-      <div class="row"><button class="btn" id="clrpts">Clear points</button><button class="btn" id="clrlog">Clear logs and track</button></div>
+      <div class="row"><button class="btn" id="clrpts">Clear points</button><button class="btn" id="clrlog">Clear logs, checks and track</button></div>
     </div>
   </section>
 </main>
@@ -281,7 +287,8 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
 </nav>
 
 <div class="toast" id="toast" role="status"></div>
-<dialog id="dirdlg"><h2>Which way does the top of your phone point?</h2><p class="note" style="margin:0 0 12px">Line the phone up with a wall or grid line, then tap the matching direction.</p><div class="lgrid"><button class="btn" data-dir="0"></button><button class="btn" data-dir="90"></button><button class="btn" data-dir="180"></button><button class="btn" data-dir="270"></button></div><div class="row" style="margin-top:10px"><button class="btn" id="dircancel">Cancel</button></div></dialog>
+<dialog id="dirdlg"><h2>Which way does the top of your phone point?</h2><p class="note" style="margin:0 0 12px">Line the phone up with a wall or grid line, then tap the matching direction.</p><div class="lgrid"><button class="btn" data-dir="0"></button><button class="btn" data-dir="90"></button><button class="btn" data-dir="180"></button><button class="btn" data-dir="270"></button></div><button class="btn wide" id="dircal" style="margin-top:10px">Walk to another point instead</button><div class="row" style="margin-top:10px"><button class="btn" id="dircancel">Cancel</button></div></dialog>
+<dialog id="caldlg"><h2>Calibration walk from <span id="calfrom"></span></h2><p class="note" style="margin:0 0 12px">Pick a point you can reach in a straight line, ideally 20 m or more away. Face it, tap Start, then walk to it at your normal pace. Arriving sets your step length and direction.</p><label class="field"><span>Walk to</span><select id="calto"></select></label><div class="row"><button class="btn primary" id="calgo">Start walk</button><button class="btn" id="calcancel">Cancel</button></div></dialog>
 <dialog id="copydlg"><h2>Copy this text</h2><textarea id="copytext" readonly></textarea><div class="row" style="margin-top:10px"><button class="btn primary" id="copybtn">Copy</button><button class="btn" id="copyclose">Close</button></div></dialog>
 <script>
 // ---- Geodesy core: Krüger-series transverse Mercator + 7-parameter Helmert ----
@@ -731,6 +738,39 @@ S.dr = null;
 let yawNow = null, lastMotionT = 0, drSensors = false, dialPending = false;
 const norm360 = a => ((a % 360) + 360) % 360;
 const angDiff = (a, b) => ((a - b + 540) % 360) - 180;
+const normAxis = a => ((((a + 45) % 90) + 90) % 90) - 45; // building axis as a bearing in [-45°, 45°)
+S.set.snap = S.set.snap !== false;
+S.set.axis = isFinite(parseFloat(S.set.axis)) ? normAxis(parseFloat(S.set.axis)) : 0;
+S.set.drRate = +S.set.drRate || 0.06; // tracking error as a share of distance walked, learned at each "I'm at"
+S.checks = store.get('checks', []);
+const SNAP_TOL = 12; // degrees either side of a building axis
+const fmtDeg = a => `${a.toFixed(2).replace(/\.?0+$/, '')}°`;
+function snapHeading(h) {
+  const ax = S.set.axis, k = Math.round(angDiff(h, ax) / 90), a = norm360(ax + 90 * k);
+  return { a, d: angDiff(h, a), k: ((k % 4) + 4) % 4 };
+}
+function detectAxis() { // dominant direction of the point file, from each point's two nearest neighbours
+  const zc = {};
+  for (const p of S.points) if (isFinite(p.E) && isFinite(p.N)) zc[p.zone] = (zc[p.zone] || 0) + 1;
+  const z = Object.keys(zc).sort((a, b) => zc[b] - zc[a])[0];
+  if (z == null) return null;
+  let P = S.points.filter(p => String(p.zone) === z && isFinite(p.E) && isFinite(p.N));
+  if (P.length > 1500) { const s = Math.ceil(P.length / 1500); P = P.filter((_, i) => i % s === 0); }
+  let C = 0, Sn = 0, W = 0;
+  for (const p of P) {
+    let n1 = null, n2 = null;
+    for (const q of P) {
+      if (q === p) continue;
+      const d = Math.hypot(q.E - p.E, q.N - p.N);
+      if (d < 0.5 || d > 150) continue;
+      if (!n1 || d < n1.d) { n2 = n1; n1 = { q, d }; } else if (!n2 || d < n2.d) n2 = { q, d };
+    }
+    for (const n of [n1, n2]) if (n) { const th = 4 * Math.atan2(n.q.E - p.E, n.q.N - p.N); C += Math.cos(th); Sn += Math.sin(th); W++; }
+  }
+  if (W < 8) return null;
+  return { ax: Math.round(normAxis(Math.atan2(Sn, C) / 4 * 180 / Math.PI) * 100) / 100, R: Math.hypot(C, Sn) / W, n: P.length };
+}
+function logCheck(c) { S.checks.push(c); if (S.checks.length > 500) S.checks.shift(); store.set('checks', S.checks); }
 function yawFrom(al, be, ga) { // clockwise heading of the phone's forward direction (top edge / back camera), sensor frame
   const r = Math.PI / 180, ca = Math.cos(al * r), sa = Math.sin(al * r), cb = Math.cos(be * r), sb = Math.sin(be * r), cg = Math.cos(ga * r), sg = Math.sin(ga * r);
   const fx = -sa * cb - (ca * sg + sa * sb * cg), fy = ca * cb - (sa * sg - ca * sb * cg); // horizontal(+y) + horizontal(-z)
@@ -756,13 +796,23 @@ function onMotion(e) {
 }
 function onStep() {
   if (!S.dr) return;
-  const L = S.set.stepLen, h = S.dr.heading * Math.PI / 180;
+  const dr = S.dr;
+  let hUse = dr.heading;
+  if (S.set.snap && !dr.cal) { // straighten the step onto the nearest building axis
+    const s = snapHeading(dr.heading);
+    if (Math.abs(s.d) <= SNAP_TOL) {
+      hUse = s.a; dr.seg.snapped++;
+      dr.run = dr.run && dr.run.k === s.k ? { k: s.k, n: dr.run.n + 1 } : { k: s.k, n: 1 };
+      if (dr.run.n >= 4) { const c = -0.1 * s.d; dr.hRef = norm360(dr.hRef + c); dr.heading = norm360(dr.heading + c); } // walking straight along an axis: pull gyro drift back
+    } else dr.run = null;
+  }
+  const L = S.set.stepLen, h = hUse * Math.PI / 180;
   S.dr.E += L * Math.sin(h); S.dr.N += L * Math.cos(h);
   S.dr.steps++; S.dr.seg.steps++; S.dr.seg.dist += L;
   S.dr.path.push([S.dr.E, S.dr.N]); if (S.dr.path.length > 3000) S.dr.path.shift();
   renderLive();
 }
-const drAcc = () => S.dr ? 0.3 + 0.06 * S.dr.seg.dist : null;
+const drAcc = () => S.dr ? 0.3 + (S.dr.cal ? 0.06 : S.set.drRate) * S.dr.seg.dist : null;
 async function startDrSensors() {
   if (drSensors) return true;
   try {
@@ -781,51 +831,91 @@ function stopTracking() {
   if (drSensors) { window.removeEventListener('devicemotion', onMotion); window.removeEventListener('deviceorientation', onRelOrient); drSensors = false; }
   renderAll();
 }
-async function beginTracking(t, h0) {
+async function beginTracking(t, h0, calTo) {
   setMyLevel(t);
-  S.dr = { E: t.E, N: t.N, zone: t.zone, heading: h0, hRef: h0, yRef: yawNow, steps: 0, anchorId: t.id,
-    seg: { E0: t.E, N0: t.N, steps: 0, dist: 0 }, path: [[t.E, t.N]] };
+  S.dr = { E: t.E, N: t.N, zone: t.zone, heading: h0, hRef: h0, yRef: yawNow, steps: 0, anchorId: t.id, cal: calTo || null, run: null,
+    seg: { E0: t.E, N0: t.N, steps: 0, dist: 0, snapped: 0, t0: Date.now() }, path: [[t.E, t.N]] };
   if (!(await startDrSensors())) { S.dr = null; }
+  if (S.dr && calTo) { setTarget(calTo); toast(`Calibration walk: walk straight to ${calTo} at an even pace, then tap "I'm at ${calTo}".`); return; }
   renderAll();
   if (S.dr) toast(`Tracking from ${t.id}. Walk with the phone held in front of you.`);
 }
 function reanchor(t) {
   setMyLevel(t);
-  const dr = S.dr, sg = dr.seg;
+  const dr = S.dr, sg = dr.seg, cal = !!dr.cal && dr.cal === t.id, wasCal = !!dr.cal;
+  dr.cal = null; dr.run = null;
   let msg = `Re-anchored at ${t.id}.`;
   const dT = [t.E - sg.E0, t.N - sg.N0], dK = [dr.E - sg.E0, dr.N - sg.N0];
   const lT = Math.hypot(...dT), lK = Math.hypot(...dK), err = Math.hypot(dr.E - t.E, dr.N - t.N);
+  if (sg.steps > 0 && sg.dist >= 3) logCheck({ kind: cal ? 'calibration' : 'check', from: dr.anchorId, to: t.id, walked: +sg.dist.toFixed(2), straight: +lT.toFixed(2),
+    err: +err.toFixed(2), dE: +(dr.E - t.E).toFixed(2), dN: +(dr.N - t.N).toFixed(2), steps: sg.steps, snappedPct: Math.round(100 * sg.snapped / sg.steps),
+    snap: cal ? false : S.set.snap, stepLen: +S.set.stepLen.toFixed(3), secs: Math.round((Date.now() - (sg.t0 || Date.now())) / 1000), t: Date.now() });
   if (sg.steps >= 10 && lT > 8 && lK > 4) {
-    msg += ` Tracking was ${err.toFixed(1)} m off after ${sg.dist.toFixed(0)} m.`;
     const ratio = lT / lK, turn = angDiff(Math.atan2(dT[0], dT[1]) * 180 / Math.PI, Math.atan2(dK[0], dK[1]) * 180 / Math.PI);
-    const fixes = [];
-    if (ratio > 0.6 && ratio < 1.6 && Math.abs(ratio - 1) > 0.03) {
-      S.set.stepLen = Math.min(1.1, Math.max(0.4, S.set.stepLen * (1 + 0.5 * (ratio - 1)))); saveSet();
-      fixes.push(`step length ${S.set.stepLen.toFixed(2)} m`);
+    if (cal) {
+      if (ratio > 0.6 && ratio < 1.6 && Math.abs(turn) < 45) {
+        S.set.stepLen = Math.min(1.1, Math.max(0.4, S.set.stepLen * ratio)); saveSet();
+        dr.hRef = norm360(dr.hRef + turn); dr.heading = norm360(dr.heading + turn);
+        msg = `Calibrated over ${lT.toFixed(0)} m: step length ${S.set.stepLen.toFixed(2)} m, direction ${turn >= 0 ? '+' : ''}${turn.toFixed(1)}°. Tracking continues from ${t.id}.`;
+      } else msg = `Calibration skipped: the walk measured ${lK.toFixed(0)} m against ${lT.toFixed(0)} m. Walk straight at an even pace and try again. Tracking continues from ${t.id}.`;
+    } else {
+      msg += ` Tracking was ${err.toFixed(1)} m off after ${sg.dist.toFixed(0)} m.`;
+      S.set.drRate = Math.min(0.15, Math.max(0.015, 0.7 * S.set.drRate + 0.3 * 1.3 * err / sg.dist)); saveSet(); // error estimate learns from real misclosures
+      const fixes = [];
+      if (ratio > 0.6 && ratio < 1.6 && Math.abs(ratio - 1) > 0.03) {
+        S.set.stepLen = Math.min(1.1, Math.max(0.4, S.set.stepLen * (1 + 0.5 * (ratio - 1)))); saveSet();
+        fixes.push(`step length ${S.set.stepLen.toFixed(2)} m`);
+      }
+      if (Math.abs(turn) > 1 && Math.abs(turn) < 45) { dr.hRef = norm360(dr.hRef + 0.8 * turn); dr.heading = norm360(dr.heading + 0.8 * turn); fixes.push(`direction ${turn > 0 ? '+' : ''}${(0.8 * turn).toFixed(0)}°`); }
+      if (fixes.length) msg += ` Adjusted ${fixes.join(' and ')}.`;
     }
-    if (Math.abs(turn) > 1 && Math.abs(turn) < 45) { dr.hRef = norm360(dr.hRef + 0.8 * turn); dr.heading = norm360(dr.heading + 0.8 * turn); fixes.push(`direction ${turn > 0 ? '+' : ''}${(0.8 * turn).toFixed(0)}°`); }
-    if (fixes.length) msg += ` Adjusted ${fixes.join(' and ')}.`;
-  }
+  } else if (wasCal) msg = `Calibration needs a straight walk of 8 m or more. Tracking continues from ${t.id} with the direction you faced.`;
   dr.E = t.E; dr.N = t.N; dr.zone = t.zone; dr.anchorId = t.id;
-  dr.seg = { E0: t.E, N0: t.N, steps: 0, dist: 0 }; dr.path.push([t.E, t.N]);
+  dr.seg = { E0: t.E, N0: t.N, steps: 0, dist: 0, snapped: 0, t0: Date.now() }; dr.path.push([t.E, t.N]);
   renderAll(); toast(msg);
 }
 let dirFor = null;
 function askDirection(t) {
   dirFor = t;
-  const loc = isLocal();
+  const loc = isLocal(), ax = S.set.axis;
   document.querySelectorAll('[data-dir]').forEach(b => {
     const d = +b.dataset.dir;
-    b.textContent = loc ? `Along local ${['+N', '+E', '−N', '−E'][d / 90]}` : `Grid ${['north', 'east', 'south', 'west'][d / 90]}`;
+    b.textContent = Math.abs(ax) > 0.005 ? `Building axis ${fmtDeg(norm360(ax + d))}`
+      : loc ? `Along local ${['+N', '+E', '−N', '−E'][d / 90]}` : `Grid ${['north', 'east', 'south', 'west'][d / 90]}`;
   });
+  $('dircal').hidden = !!S.dr;
   $('dirdlg').showModal();
 }
 document.querySelectorAll('[data-dir]').forEach(b => b.onclick = () => {
   $('dirdlg').close();
-  const h = +b.dataset.dir;
+  const h = norm360(S.set.axis + +b.dataset.dir);
   if (S.dr) { S.dr.hRef = h; S.dr.yRef = yawNow; S.dr.heading = h; renderAll(); toast('Direction re-aligned.'); }
   else if (dirFor) beginTracking(dirFor, h);
 });
+/* calibration walk: start on A, face B, walk straight; arriving sets step length and direction from the known line */
+function calCandidates(a) {
+  return S.points.filter(p => p !== a && String(p.zone) === String(a.zone) && isFinite(p.E) && isFinite(p.N)
+      && (a.H == null || p.H == null || Math.abs(p.H - a.H) <= LEVEL_TOL))
+    .map(p => ({ p, d: Math.hypot(p.E - a.E, p.N - a.N) })).filter(x => x.d >= 10 && x.d <= 150)
+    .sort((x, y) => Math.abs(x.d - 30) - Math.abs(y.d - 30)).slice(0, 40).sort((x, y) => x.d - y.d);
+}
+$('dircal').onclick = () => {
+  const a = dirFor; if (!a) return;
+  const c = calCandidates(a);
+  $('dirdlg').close();
+  if (!c.length) { toast(`No known points 10–150 m from ${a.id} on this level. Use a direction instead.`); return; }
+  $('calfrom').textContent = a.id;
+  setHTML($('calto'), c.map(x => `<option value="${esc(x.p.id)}">${esc(x.p.id)}, ${x.d.toFixed(1)} m</option>`).join(''));
+  const best = c.find(x => x.d >= 20) || c[c.length - 1]; $('calto').value = best.p.id;
+  $('caldlg').showModal();
+};
+$('calgo').onclick = () => {
+  const a = dirFor, b = S.points.find(p => p.id === $('calto').value);
+  $('caldlg').close();
+  if (!a || !b) return;
+  beginTracking(a, norm360(Math.atan2(b.E - a.E, b.N - a.N) * 180 / Math.PI), b.id);
+};
+$('calcancel').onclick = () => $('caldlg').close();
 $('dircancel').onclick = () => $('dirdlg').close();
 function renderDrControls(t) {
   const box = $('tdr');
@@ -834,7 +924,7 @@ function renderDrControls(t) {
   setHTML(box, S.dr
     ? `<div class="row"><button class="btn primary" data-dr="anchor">I'm at ${esc(t.id)}</button><button class="btn" data-dr="stop">Back to GPS</button></div>
        <div class="row" style="margin-top:8px"><button class="btn wide" data-dr="align">Re-align direction</button></div>
-       <p class="note">Tap "I'm at" whenever you stand on a known point. It resets the error and fine-tunes step length and direction.</p>`
+       <p class="note">${S.dr.cal ? `Calibration walk to ${esc(S.dr.cal)}: walk straight at an even pace and tap "I'm at ${esc(S.dr.cal)}" when you stand on it.` : `Tap "I'm at" whenever you stand on a known point. It resets the error and fine-tunes step length and direction.`}</p>`
     : `<button class="btn wide" data-dr="start">Track indoors from ${esc(t.id)}</button>
        <p class="note">For inside the building. Stand on this point, then walk. Uses your steps and the gyro instead of GPS.</p>`);
 }
@@ -861,7 +951,7 @@ function myGrid(zone) {
 function renderStatus() {
   if (S.dr) {
     $('fixstate').dataset.s = 'dr';
-    $('fixtext').textContent = `Indoor tracking, ${S.dr.steps} steps`;
+    $('fixtext').textContent = S.dr.cal ? `Calibration walk, ${S.dr.seg.steps} steps` : `Indoor tracking, ${S.dr.steps} steps`;
     $('acc').innerHTML = `±<b>${drAcc().toFixed(1)}</b> m`;
     return;
   }
@@ -1032,10 +1122,15 @@ function renderSetup() {
     : 'Eastings with the zone prefix (e.g. 33412345.67) are accepted.';
   $('siteinfo').textContent = S.site ? `Loaded site: ${S.site.name}${S.site.created ? ', setup from ' + new Date(S.site.created).toLocaleDateString() : ''}.` : 'No site setup loaded on this phone.';
   if (document.activeElement !== $('steplen')) $('steplen').value = S.set.stepLen.toFixed(2);
+  $('snap').checked = S.set.snap;
+  if (document.activeElement !== $('axis')) $('axis').value = fmtDeg(S.set.axis).replace('°', '');
+  $('drratenote').textContent = `Current tracking error estimate: about ${(S.set.drRate * 100).toFixed(1)}% of distance walked since the last known point. It updates from your own "I'm at" checks.`;
+  $('exchecks').textContent = `Indoor checks (${S.checks.length})`;
   $('wake').checked = !!S.set.wake; $('rec').checked = !!S.rec; $('compass').checked = compassOn;
   $('trackinfo').textContent = S.track.length ? `${S.track.length} positions stored` : 'Saves your path on this phone';
   $('exlog').textContent = `Logged positions (${S.logged.length})`;
   $('extrack').textContent = `Track (${S.track.length})`;
+
 }
 
 /* ---------- local grid setup ---------- */
@@ -1296,8 +1391,14 @@ async function exportText(name, text) {
 $('exlog').onclick = () => {
   if (!S.logged.length) { toast('No logged positions yet. Use Log position on the Stake out tab.'); return; }
   const D = curD();
-  const lines = ['id;easting;northing;zone;system;lat_wgs84;lon_wgs84;gps_acc_m;fixes;spread_m;near_point;time_utc'];
-  for (const { r, g } of csvRows(S.logged)) lines.push([r.id, (isFinite(g.E) ? f3(g.E) : ''), (isFinite(g.N) ? f3(g.N) : ''), g.zone === 'L' ? 'local' : g.zone, D.short, r.lat.toFixed(8), r.lon.toFixed(8), r.acc, r.n, r.spread, r.near, iso(r.t)].join(';'));
+  const lines = ['id;easting;northing;zone;system;lat_wgs84;lon_wgs84;gps_acc_m;fixes;spread_m;near_point;known_easting;known_northing;dE_m;dN_m;offset_m;time_utc'];
+  for (const { r, g } of csvRows(S.logged)) {
+    const k = r.near ? S.points.find(p => p.id === r.near) : null;
+    const ok = k && isFinite(g.E) && String(k.zone) === String(g.zone);
+    const dE = ok ? g.E - k.E : NaN, dN = ok ? g.N - k.N : NaN;
+    lines.push([r.id, (isFinite(g.E) ? f3(g.E) : ''), (isFinite(g.N) ? f3(g.N) : ''), g.zone === 'L' ? 'local' : g.zone, D.short, r.lat.toFixed(8), r.lon.toFixed(8), r.acc, r.n, r.spread, r.near,
+      ok ? f3(k.E) : '', ok ? f3(k.N) : '', ok ? f3(dE) : '', ok ? f3(dN) : '', ok ? f3(Math.hypot(dE, dN)) : '', iso(r.t)].join(';'));
+  }
   exportText('logged-positions.csv', lines.join('\n'));
 };
 $('extrack').onclick = () => {
@@ -1337,7 +1438,7 @@ S.site = store.get('site', null); // {name, created}
 function siteSetupJSON(name) {
   return JSON.stringify({
     app: 'stakeout-site', v: 1, name, created: new Date().toISOString(),
-    settings: { datum: S.set.datum, width: S.set.width, order: S.set.order, local: S.set.local },
+    settings: { datum: S.set.datum, width: S.set.width, order: S.set.order, local: S.set.local, axis: S.set.axis },
     points: { fileName: S.fileName, raw: S.raw },
   });
 }
@@ -1346,6 +1447,7 @@ function applySiteSetup(obj) {
   const keep = { wake: S.set.wake }; // personal preferences stay
   S.set = Object.assign({}, S.set, obj.settings, keep);
   S.set.local = Object.assign({}, S.set.local, obj.settings.local || {});
+  S.set.axis = isFinite(parseFloat(S.set.axis)) ? normAxis(parseFloat(S.set.axis)) : 0;
   S.site = { name: obj.name || 'Site', created: obj.created || '' };
   store.set('site', S.site); saveSet(); buildLT();
   S.target = null; store.set('target', null);
@@ -1393,8 +1495,25 @@ $('wake').onchange = e => { S.set.wake = e.target.checked; saveSet(); setWake(S.
 $('compass').onchange = e => setCompass(e.target.checked);
 $('rec').onchange = e => { S.rec = e.target.checked; store.set('rec', S.rec); if (!S.rec) store.set('track', S.track); renderSetup(); };
 $('clrpts').onclick = () => { if (!confirm('Remove the imported points from this phone?')) return; S.raw = ''; S.points = []; S.target = null; S.site = null; store.set('raw', ''); store.set('target', null); store.set('site', null); renderAll(); };
-$('clrlog').onclick = () => { if (!confirm('Delete logged positions and the recorded track?')) return; S.logged = []; S.track = []; store.set('logged', []); store.set('track', []); renderAll(); };
+$('clrlog').onclick = () => { if (!confirm('Delete logged positions, indoor checks and the recorded track?')) return; S.logged = []; S.track = []; S.checks = []; store.set('logged', []); store.set('track', []); store.set('checks', []); renderAll(); };
 $('logbtn').onclick = startLog;
+$('snap').onchange = e => { S.set.snap = e.target.checked; saveSet(); renderSetup(); };
+$('axis').addEventListener('change', e => { const v = pnum(e.target.value); if (isFinite(v)) { S.set.axis = normAxis(v); saveSet(); $('axisnote').textContent = ''; } else toast('Enter the axis bearing in degrees, for example 0 or 37.5.'); renderSetup(); });
+$('axisdetect').onclick = () => {
+  if (!S.points.length) { toast('Import the point file first.'); return; }
+  const r = detectAxis();
+  if (!r) { $('axisnote').textContent = 'Not enough points close together to find a grid. Enter the bearing instead.'; return; }
+  if (r.R < 0.3) { $('axisnote').textContent = `No clear grid in these points (best guess ${fmtDeg(r.ax)}, weak). Enter the bearing instead.`; return; }
+  S.set.axis = r.ax; saveSet();
+  $('axisnote').textContent = `Set to ${fmtDeg(r.ax)} from ${r.n} points${r.R < 0.5 ? '. The pattern is weak, so check it against a drawing' : ''}.`;
+  renderSetup();
+};
+$('exchecks').onclick = () => {
+  if (!S.checks.length) { toast('No indoor checks yet. Track indoors and tap "I\'m at" on known points.'); return; }
+  const lines = ['kind;from;to;walked_m;straight_line_m;misclosure_m;dE_m;dN_m;error_pct_of_walked;steps;snapped_pct;snap_on;step_length_m;seconds;time_utc'];
+  for (const c of S.checks) lines.push([c.kind, c.from, c.to, c.walked, c.straight, c.err, c.dE, c.dN, (100 * c.err / c.walked).toFixed(1), c.steps, c.snappedPct, c.snap ? 'yes' : 'no', c.stepLen, c.secs, iso(c.t)].join(';'));
+  exportText('indoor-checks.csv', lines.join('\n'));
+};
 $('steplen').addEventListener('change', e => { const v = pnum(e.target.value); if (v >= 0.3 && v <= 1.2) { S.set.stepLen = v; saveSet(); } else { toast('Enter a step length between 0.30 and 1.20 m.'); } renderSetup(); });
 $('zin').onclick = () => { S.zoom *= 2; drawPlot(); };
 $('zout').onclick = () => { S.zoom /= 2; drawPlot(); };
