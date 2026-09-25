@@ -187,7 +187,7 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
       </div>
       <input type="file" id="file" accept=".json,.csv,.txt,.pts,.dat,.xyz,.asc,text/*,application/json" hidden>
       <div id="pastebox" hidden style="margin-top:12px">
-        <textarea id="pastetext" placeholder="1001  5411893.62  5658167.51  112.40  corner A"></textarea>
+        <textarea id="pastetext" placeholder="ID  Easting  Northing  Height  Code"></textarea>
         <div class="row" style="margin-top:8px"><button class="btn primary" id="pasteok">Load these points</button></div>
       </div>
       <p class="summary" id="summary"></p>
@@ -225,7 +225,7 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
         <p class="note" style="margin:0 0 8px">One point per line: ID, local easting and northing (same column order as your point file), then easting and northing in <span id="lrefname"></span>. Use 3 or more points to get a residual check.</p>
         <div class="seg" style="margin-bottom:6px"><button data-ls="shift">Shift only</button><button data-ls="full">Shift, rotation, scale</button></div>
         <p class="note" style="margin:0 0 10px">Shift only keeps the rotation and scale from Parameters and averages the readings. It suits phone GPS best. The full fit needs 3 or more points far apart.</p>
-        <textarea id="lptext" wrap="off" style="white-space:pre;overflow-x:auto" placeholder="GP1  100.000  200.000  411791.600  5656349.850&#10;GP2  350.000  200.000  412037.120  5656301.410&#10;GP3  350.000  500.000  412094.330  5656596.280"></textarea>
+        <textarea id="lptext" wrap="off" style="white-space:pre;overflow-x:auto" placeholder="ID  Local E  Local N  Known E  Known N"></textarea>
         <button class="btn primary wide" id="lfit" style="margin-top:10px">Compute transformation</button>
       </div>
       <div id="lparams">
@@ -972,7 +972,7 @@ function renderList() {
     $('listblock').hidden = true;
     sum.className = 'summary';
     sum.innerHTML = S.raw ? `No coordinates found in ${esc(S.fileName || 'the text')}. Each line needs an ID followed by easting and northing.`
-      : `One point per line: ID, easting, northing, then optional height and code. Spaces, tabs, commas or semicolons all work. Example: <code>1001 5411893.62 5658167.51 112.40 corner</code>`;
+      : `One point per line: ID, easting, northing, then optional height and code. Spaces, tabs, commas or semicolons all work.`;
     return;
   }
   $('listblock').hidden = false;
