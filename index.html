@@ -153,6 +153,13 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
 .fixstate[data-s="dr"]{color:var(--me)}
 
 .seg.rng{grid-template-columns:repeat(4,1fr)}
+.chip{display:inline-block;font-family:var(--font-c);font-weight:600;font-size:14px;line-height:1;padding:5px 8px;border-radius:6px;white-space:nowrap;
+  color:var(--c);background:color-mix(in srgb,var(--c) 14%,var(--surface));border:1px solid color-mix(in srgb,var(--c) 40%,transparent)}
+.chip[data-st="found"]{--c:var(--live)} .chip[data-st="disturbed"]{--c:var(--stale)} .chip[data-st="covered"]{--c:var(--me)} .chip[data-st="missing"]{--c:var(--lost)}
+.t-head .chip{align-self:center;margin-left:auto}
+.plist .pid .chip{margin-left:8px;vertical-align:2px;font-size:13px;padding:3px 6px}
+.seg.rs{grid-template-columns:1fr 1fr}
+.seg.rs button:nth-child(n+3){border-top:1px solid var(--line)} .seg.rs button:nth-child(even){border-left:1px solid var(--line)}
 </style></head><body>
 <header class="status">
   <div class="wrap">
@@ -164,7 +171,7 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
 <main class="wrap">
   <!-- Navigate -->
   <section id="tab-nav">
-    <div class="block target" id="target"><div id="tbody"></div><div class="t-nav" id="tnav" hidden><button id="tprev" data-step="-1">Previous point</button><button id="tnext" data-step="1">Next point</button></div><div class="t-cal" id="tdr" hidden></div><div class="t-cal" id="tcal" hidden><button class="btn wide" id="calbtn">Use as calibration point</button><p class="note">Stand still exactly on this point in open sky. Records a 15 s GPS average and links the local grid to it.</p></div></div>
+    <div class="block target" id="target"><div id="tbody"></div><div class="t-nav" id="tnav" hidden><button id="tprev" data-step="-1">Previous point</button><button id="tnext" data-step="1">Next point</button></div><div class="t-cal" id="tdr" hidden></div><div class="t-cal" id="tcal" hidden><button class="btn wide" id="calbtn">Use as calibration point</button><p class="note">Stand still exactly on this point in open sky. Records a 15 s GPS average and links the local grid to it.</p></div><div class="t-cal" id="trep" hidden><button class="btn wide" id="repbtn">Report point condition</button><p class="note" id="replast"></p></div></div>
     <div class="block plot">
       <canvas id="plot" aria-label="Plan view of your position and nearby points, north up"></canvas>
       <div class="zoom"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">−</button><button id="zfit" aria-label="Fit to target" style="font-size:14px">Fit</button></div>
@@ -182,6 +189,11 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
 
   <!-- Points -->
   <section id="tab-pts" hidden>
+    <div class="block" id="siteblock" hidden>
+      <label class="lbl" for="sitesel">Site</label>
+      <div class="row"><select id="sitesel" style="flex:1"></select><button class="btn" id="siterm" style="flex:0 0 auto;min-height:48px">Remove</button></div>
+      <p class="note" id="sitenote"></p>
+    </div>
     <div class="block">
       <div class="row">
         <label class="btn primary" for="file" style="flex:1">Import site setup or point file</label>
@@ -270,8 +282,8 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
     <div class="block">
       <h2>Export</h2>
       <div class="row"><button class="btn" id="exlog">Logged positions</button><button class="btn" id="extrack">Track</button></div>
-      <div class="row" style="margin-top:10px"><button class="btn" id="exchecks">Indoor checks</button></div>
-      <p class="note">CSV with ID, easting and northing in the coordinate system above, plus WGS84 lat/lon and GPS accuracy. Logged positions include the offset from the point you were navigating to. Indoor checks list every "I'm at" with the distance walked and how far off the tracking was.</p>
+      <div class="row" style="margin-top:10px"><button class="btn" id="exchecks">Indoor checks</button><button class="btn" id="exreps">Point reports</button></div>
+      <p class="note">CSV with ID, easting and northing in the coordinate system above, plus WGS84 lat/lon and GPS accuracy. Logged positions include the offset from the point you were navigating to. Indoor checks list every "I'm at" with the distance walked and how far off the tracking was. Point reports list each point's condition with your position at the time.</p>
     </div>
     <div class="block">
       <h2>Share with the team</h2>
@@ -281,7 +293,8 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
     </div>
     <div class="block">
       <h2>Stored on this phone</h2>
-      <div class="row"><button class="btn" id="clrpts">Clear points</button><button class="btn" id="clrlog">Clear logs, checks and track</button></div>
+      <div class="row"><button class="btn" id="clrpts">Remove this site</button><button class="btn" id="clrlog">Clear logs, checks and track</button></div>
+      <div class="row" style="margin-top:10px"><button class="btn" id="clrreps">Clear point reports for this site</button></div>
     </div>
   </section>
 </main>
@@ -297,6 +310,11 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
 <div class="toast" id="toast" role="status"></div>
 <dialog id="dirdlg"><h2>Which way does the top of your phone point?</h2><p class="note" style="margin:0 0 12px">Line the phone up with a wall or grid line, then tap the matching direction.</p><div class="lgrid"><button class="btn" data-dir="0"></button><button class="btn" data-dir="90"></button><button class="btn" data-dir="180"></button><button class="btn" data-dir="270"></button></div><button class="btn wide" id="dircal" style="margin-top:10px">Walk to another point instead</button><div class="row" style="margin-top:10px"><button class="btn" id="dircancel">Cancel</button></div></dialog>
 <dialog id="caldlg"><h2>Calibration walk from <span id="calfrom"></span></h2><p class="note" style="margin:0 0 12px">Pick a point you can reach in a straight line, ideally 20 m or more away. Face it, tap Start, then walk to it at your normal pace. Arriving sets your step length and direction.</p><label class="field"><span>Walk to</span><select id="calto"></select></label><div class="row"><button class="btn primary" id="calgo">Start walk</button><button class="btn" id="calcancel">Cancel</button></div></dialog>
+<dialog id="repdlg"><h2>Condition of <span id="repid"></span></h2>
+<div class="seg rs"><button data-rs="found">Found, intact</button><button data-rs="disturbed">Disturbed</button><button data-rs="covered">Covered</button><button data-rs="missing">Missing</button></div>
+<label class="field" style="margin:12px 0 6px"><span>Note (optional)</span><textarea id="repnote" style="min-height:80px" placeholder="For example: under 20 cm of gravel, 1 m east of the kerb"></textarea></label>
+<p class="note" id="repwhere" style="margin:0 0 12px"></p>
+<div class="row"><button class="btn primary" id="repsave">Save report</button><button class="btn" id="repcancel">Cancel</button></div></dialog>
 <dialog id="copydlg"><h2>Copy this text</h2><textarea id="copytext" readonly></textarea><div class="row" style="margin-top:10px"><button class="btn primary" id="copybtn">Copy</button><button class="btn" id="copyclose">Close</button></div></dialog>
 <script>
 // ---- Geodesy core: Krüger-series transverse Mercator + 7-parameter Helmert ----
@@ -446,7 +464,7 @@ const S = {
   logged: store.get('logged', []), logging: null,
   zoom: 1, tab: 'nav',
 };
-const saveSet = () => store.set('settings', S.set);
+const saveSet = () => { store.set('settings', S.set); saveActiveSite(); };
 
 /* ---------- coordinate systems, incl. local site grid ---------- */
 const LOCAL = { short: 'Local grid', gk: false, local: true };
@@ -627,6 +645,7 @@ function loadRaw(raw, name) {
   if (S.target && !S.points.some(p => p.id === S.target)) S.target = null;
   if (!store.set('raw', raw)) toast('File too large to keep after closing. It works for this session.');
   store.set('fileName', S.fileName); store.set('target', S.target);
+  saveActiveSite();
   renderAll();
 }
 
@@ -1093,6 +1112,7 @@ function renderTarget() {
   const box = $('target'), t = targetPt();
   box.classList.remove('arrived');
   $('tcal').hidden = !(isLocal() && t) || !!S.dr;
+  renderRep(t);
   renderDrControls(t);
   if (!t) $('tnav').hidden = true;
   if (!S.points.length) {
@@ -1109,7 +1129,7 @@ function renderTarget() {
     setHTML($('tbody'), `<div class="empty"><strong>Local grid not set up</strong><p>Your points are in a local grid. Link it to a known system in Setup, using common points or transformation parameters.</p><button class="btn primary" data-go="set">Set up local grid</button></div>`);
     return;
   }
-  let head = `<div class="t-head"><div class="t-id">${esc(t.id)}</div><div class="t-meta">${esc([t.code, t.H != null ? 'H ' + t.H.toFixed(2) : ''].filter(Boolean).join(', '))}</div></div>`;
+  let head = `<div class="t-head"><div class="t-id">${esc(t.id)}</div><div class="t-meta">${esc([t.code, t.H != null ? 'H ' + t.H.toFixed(2) : ''].filter(Boolean).join(', '))}</div>${chip(lastReport(t.id))}</div>`;
   let body, warn = '';
   if (!S.fix && !S.dr) {
     body = `<div class="t-body"><svg class="dial" id="dial" viewBox="-80 -80 160 160"></svg><div><div class="dist">—</div><div class="deltas"><div><span>${S.errCode === 1 ? 'Location blocked. See below.' : 'Waiting for your position'}</span></div></div></div></div>`;
@@ -1187,6 +1207,7 @@ function renderMe() {
   dl.innerHTML = h;
 }
 function renderList() {
+  renderSites();
   const ul = $('plist'), q = $('filter').value.trim().toLowerCase();
   const sum = $('summary');
   if (!S.points.length) {
@@ -1232,7 +1253,7 @@ function renderList() {
   const MAX = 300;
   S._listAt = S.dr ? { E: S.dr.E, N: S.dr.N } : S.fix ? { lat: S.fix.lat, lon: S.fix.lon } : null;
   setHTML(ul, withD.slice(0, MAX).map(({ p, d }) =>
-    `<li class="${p.id === S.target ? 'on' : ''}"><button data-id="${esc(p.id)}"><span class="pid">${esc(p.id)}</span><span class="pd">${d == null ? '' : fmtDist(d)}</span><span class="pc">${esc([p.code, p.H != null ? 'H ' + p.H.toFixed(2) : '', `${p.E.toFixed(2)} / ${p.N.toFixed(2)}`].filter(Boolean).join(', '))}</span></button></li>`).join('')
+    `<li class="${p.id === S.target ? 'on' : ''}"><button data-id="${esc(p.id)}"><span class="pid">${esc(p.id)}${chip(lastReport(p.id))}</span><span class="pd">${d == null ? '' : fmtDist(d)}</span><span class="pc">${esc([p.code, p.H != null ? 'H ' + p.H.toFixed(2) : '', `${p.E.toFixed(2)} / ${p.N.toFixed(2)}`].filter(Boolean).join(', '))}</span></button></li>`).join('')
     + (withD.length > MAX ? `<li class="more">Showing the ${MAX} ${S.fix ? 'nearest' : 'first'} of ${withD.length}. Search to narrow down.</li>` : '')
     + (!withD.length ? (q ? `<li class="more">No point matches “${esc(q)}”.</li>` : `<li class="more">No points within ${rng} m${levelOn() ? ' on your level' : ''}. <button class="btn" data-rng="all" style="margin-top:8px;min-height:40px">Show all points</button></li>`) : ''));
 }
@@ -1571,6 +1592,7 @@ document.addEventListener('click', e => {
 });
 /* ---------- site setup file (points + coordinate system + calibration in one file) ---------- */
 S.site = store.get('site', null); // {name, created}
+S.reports = store.get('reports', {}); // { siteId: [ {id, status, note, t, ...} ] }
 function siteSetupJSON(name) {
   return JSON.stringify({
     app: 'stakeout-site', v: 1, name, created: new Date().toISOString(),
@@ -1578,34 +1600,161 @@ function siteSetupJSON(name) {
     points: { fileName: S.fileName, raw: S.raw },
   });
 }
+/* several sites stored on this phone; the active one mirrors S.set / S.raw */
+var siteBusy = false; // var: saveSet can run before this line
+const SITE_KEYS = ['datum', 'width', 'order', 'local', 'axis'];
+const newId = () => 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+function siteSnapshot() { const o = {}; for (const k of SITE_KEYS) if (S.set[k] !== undefined) o[k] = S.set[k]; return JSON.parse(JSON.stringify(o)); }
+function saveActiveSite() {
+  if (siteBusy || !Array.isArray(S.sites)) return;
+  const e = S.sites.find(x => x.id === S.siteId); if (!e) return;
+  e.settings = siteSnapshot(); e.points = { fileName: S.fileName, raw: S.raw };
+  if (S.site) { e.name = S.site.name; e.created = S.site.created || e.created; }
+  if (!store.set('sites', S.sites)) toast('Phone storage is full. Remove a site you no longer need.');
+}
+S.sites = store.get('sites', null); S.siteId = store.get('siteId', null);
+if (!Array.isArray(S.sites)) { // first run with site support: keep what is already on the phone as a site
+  S.sites = [];
+  if (S.raw) {
+    const id = newId();
+    S.sites.push({ id, name: (S.site && S.site.name) || S.fileName || 'Site 1', created: (S.site && S.site.created) || '', settings: siteSnapshot(), points: { fileName: S.fileName, raw: S.raw } });
+    S.siteId = id; if (!S.site) { S.site = { name: S.sites[0].name, created: '' }; store.set('site', S.site); }
+  }
+  store.set('sites', S.sites); store.set('siteId', S.siteId);
+}
+function activateSite(id, quiet) {
+  saveActiveSite();
+  const e = S.sites.find(x => x.id === id); if (!e) return;
+  if (S.dr) stopTracking();
+  siteBusy = true;
+  const keep = { wake: S.set.wake, snap: S.set.snap, stepLen: S.set.stepLen, drRate: S.set.drRate, extName: S.set.extName, listRange: S.set.listRange }; // personal settings stay
+  S.set = Object.assign({}, S.set, JSON.parse(JSON.stringify(e.settings || {})), keep);
+  S.set.local = Object.assign({ ref: 'utm33', width: 3, mode: 'points', pts: '', p: { x0: '0', y0: '0', E0: '', N0: '', rot: '0', unit: 'gon', ppm: '0' } }, S.set.local || {});
+  S.set.axis = isFinite(parseFloat(S.set.axis)) ? normAxis(parseFloat(S.set.axis)) : 0;
+  S.set.myH = null; S.set.myHsrc = null;
+  S.site = { name: e.name, created: e.created || '' }; store.set('site', S.site);
+  S.siteId = id; store.set('siteId', id);
+  store.set('settings', S.set); buildLT();
+  S.target = null; store.set('target', null);
+  loadRaw((e.points && e.points.raw) || '', (e.points && e.points.fileName) || e.name);
+  siteBusy = false; saveActiveSite();
+  if (!quiet) {
+    const n = FIT && FIT.rows ? FIT.rows.length : 0;
+    toast(`${e.name}: ${S.points.length} points${isLocal() ? (LT ? `, local grid linked${n ? ` from ${n} calibration point${n === 1 ? '' : 's'}` : ''}` : ', local grid not linked yet') : ''}.`);
+  }
+}
+function addSite(name, created, settings, points) {
+  saveActiveSite();
+  const id = newId();
+  S.sites.push({ id, name, created: created || '', settings, points });
+  if (!store.set('sites', S.sites)) { S.sites.pop(); toast('Phone storage is full. Remove a site you no longer need, then import again.'); return null; }
+  activateSite(id);
+  return id;
+}
 function applySiteSetup(obj) {
   if (!obj || obj.app !== 'stakeout-site' || !obj.settings || !obj.points) throw new Error('not a site setup');
-  const keep = { wake: S.set.wake }; // personal preferences stay
-  S.set = Object.assign({}, S.set, obj.settings, keep);
-  S.set.local = Object.assign({}, S.set.local, obj.settings.local || {});
-  S.set.axis = isFinite(parseFloat(S.set.axis)) ? normAxis(parseFloat(S.set.axis)) : 0;
-  S.site = { name: obj.name || 'Site', created: obj.created || '' };
-  store.set('site', S.site); saveSet(); buildLT();
-  S.target = null; store.set('target', null);
-  loadRaw(obj.points.raw || '', obj.points.fileName || 'site setup');
-  const n = FIT && FIT.rows ? FIT.rows.length : 0;
-  toast(`${S.site.name} loaded: ${S.points.length} points${isLocal() ? (LT ? `, local grid linked${n ? ` from ${n} calibration point${n === 1 ? '' : 's'}` : ''}` : ', local grid not linked yet') : ''}.`);
+  const name = obj.name || 'Site', old = S.sites.find(x => x.name === name);
+  if (old) {
+    if (!confirm(`"${name}" is already on this phone. Update it with this file? Your point reports for it are kept.`)) return;
+    saveActiveSite(); if (old.id === S.siteId) S.siteId = null; // stop the active copy overwriting the update
+    old.settings = obj.settings; old.points = obj.points; old.created = obj.created || '';
+    store.set('sites', S.sites); activateSite(old.id);
+  } else addSite(name, obj.created, obj.settings, obj.points);
+}
+function removeSite(id) {
+  const e = S.sites.find(x => x.id === id); if (!e) return;
+  const nr = (S.reports[id] || []).length;
+  if (!confirm(`Remove "${e.name}" from this phone${nr ? `, including ${nr} point report${nr === 1 ? '' : 's'}` : ''}? Export anything you need first.`)) return;
+  S.sites = S.sites.filter(x => x.id !== id); store.set('sites', S.sites);
+  delete S.reports[id]; store.set('reports', S.reports);
+  if (id === S.siteId) {
+    if (S.sites.length) { S.siteId = null; activateSite(S.sites[0].id); }
+    else { if (S.dr) stopTracking(); S.siteId = null; store.set('siteId', null); S.raw = ''; S.fileName = ''; S.points = []; S.target = null; S.site = null; store.set('raw', ''); store.set('target', null); store.set('site', null); renderAll(); }
+  } else renderAll();
 }
 function readSiteText(text, name) {
   let obj = null;
   try { obj = JSON.parse(text); } catch { }
   if (obj && obj.app === 'stakeout-site') {
-    if ((S.raw || S.site) && !confirm(`Replace the points and coordinate settings on this phone with the site setup "${obj.name || name}"?`)) return true;
     try { applySiteSetup(obj); } catch { toast('That site setup file is damaged. Ask for a new copy.'); }
     return true;
   }
   return false;
+}
+/* point condition reports, per site */
+const RS = { found: 'Found', disturbed: 'Disturbed', covered: 'Covered', missing: 'Missing' };
+const repKey = () => S.siteId || 'default';
+const repList = () => S.reports[repKey()] || [];
+function lastReport(id) { const L = repList(); for (let i = L.length - 1; i >= 0; i--) if (L[i].id === id) return L[i]; return null; }
+const chip = r => r ? `<span class="chip" data-st="${r.status}">${RS[r.status]}</span>` : '';
+let repStatus = null;
+function openReport() {
+  const t = targetPt(); if (!t) return;
+  const r = lastReport(t.id); repStatus = r ? r.status : null;
+  $('repid').textContent = t.id; $('repnote').value = '';
+  document.querySelectorAll('[data-rs]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.rs === repStatus)));
+  const w = reportWhere(t);
+  $('repwhere').textContent = w ? `Your position is saved with the report: ${fmtDist(w.off)} from the point (${w.srcTxt}).` : 'No live position right now. The report is saved without one.';
+  $('repdlg').showModal();
+}
+function reportWhere(t) {
+  const D = curD();
+  if (!S.dr && !(S.fix && fixState() === 'live')) return null;
+  const g = myGrid(D.gk ? t.zone : undefined); if (!g || !isFinite(g.E)) return null;
+  const srcTxt = S.dr ? `indoor tracking, ±${drAcc().toFixed(1)} m` : S.fix.src === 'ext' ? `${QTXT[S.fix.q] || 'GPS'}, receiver, ±${S.fix.acc < 1 ? S.fix.acc.toFixed(2) : S.fix.acc.toFixed(1)} m` : `phone GPS, ±${S.fix.acc.toFixed(1)} m`;
+  return { E: g.E, N: g.N, off: Math.hypot(g.E - t.E, g.N - t.N), acc: S.dr ? drAcc() : S.fix.acc,
+    src: S.dr ? 'indoor tracking' : S.fix.src === 'ext' ? 'receiver' : 'phone', fixType: S.dr ? '' : S.fix.src === 'ext' ? (QTXT[S.fix.q] || '') : '', srcTxt };
+}
+document.querySelectorAll('[data-rs]').forEach(b => b.onclick = () => { repStatus = b.dataset.rs; document.querySelectorAll('[data-rs]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); });
+function saveReport() {
+  const t = targetPt(); if (!t) { $('repdlg').close(); return; }
+  if (!repStatus) { toast('Choose the condition first.'); return; }
+  const w = reportWhere(t);
+  const r = { id: t.id, status: repStatus, note: $('repnote').value.trim(), t: Date.now(), pE: t.E, pN: t.N,
+    myE: w ? +w.E.toFixed(3) : null, myN: w ? +w.N.toFixed(3) : null, off: w ? +w.off.toFixed(3) : null, acc: w ? +w.acc.toFixed(3) : null, src: w ? w.src : '', fixType: w ? w.fixType : '' };
+  (S.reports[repKey()] = S.reports[repKey()] || []).push(r);
+  if (!store.set('reports', S.reports)) { S.reports[repKey()].pop(); toast('Phone storage is full. Export and clear old reports first.'); return; }
+  $('repdlg').close(); toast(`${t.id} reported as ${RS[repStatus].toLowerCase()}.`); renderAll();
+}
+function renderRep(t) {
+  const box = $('trep'); box.hidden = !t; if (!t) return;
+  const r = lastReport(t.id);
+  $('replast').textContent = r ? `Last report: ${RS[r.status]}, ${new Date(r.t).toLocaleDateString()}${r.note ? `. "${r.note}"` : ''}` : 'Mark it found, disturbed, covered or missing. Reports export as CSV for the office.';
+}
+$('repbtn').onclick = openReport;
+$('repsave').onclick = saveReport;
+$('repcancel').onclick = () => $('repdlg').close();
+$('exreps').onclick = () => {
+  const L = repList();
+  if (!L.length) { toast('No point reports for this site yet.'); return; }
+  const lines = ['site;point_id;condition;note;point_easting;point_northing;my_easting;my_northing;offset_m;position_source;fix_type;accuracy_m;time_utc'];
+  const site = S.site ? S.site.name : '';
+  const q = v => /[;"\n]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : v;
+  for (const r of L) lines.push([q(site), q(r.id), RS[r.status], q(r.note), f3(r.pE), f3(r.pN), r.myE != null ? f3(r.myE) : '', r.myN != null ? f3(r.myN) : '', r.off != null ? f3(r.off) : '', r.src, r.fixType, r.acc != null ? r.acc : '', iso(r.t)].join(';'));
+  exportText(`point-reports-${(site || 'site').replace(/[^\w-]+/g, '_')}.csv`, lines.join('\n'));
+};
+$('clrreps').onclick = () => { const n = repList().length; if (!n) { toast('No point reports for this site.'); return; } if (!confirm(`Delete ${n} point report${n === 1 ? '' : 's'} for this site? Export them first if the office needs them.`)) return; delete S.reports[repKey()]; store.set('reports', S.reports); renderAll(); };
+$('sitesel').onchange = e => { if (e.target.value !== S.siteId) activateSite(e.target.value); };
+$('siterm').onclick = () => { if (S.siteId) removeSite(S.siteId); };
+function renderSites() {
+  const b = $('siteblock'); b.hidden = !S.sites.length; if (!S.sites.length) return;
+  setHTML($('sitesel'), S.sites.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join(''));
+  $('sitesel').value = S.siteId || '';
+  const n = repList().length;
+  $('sitenote').textContent = `${S.sites.length} site${S.sites.length === 1 ? '' : 's'} on this phone. Importing a site setup or point file adds a new one.${n ? ` ${n} point report${n === 1 ? '' : 's'} for this site.` : ''}`;
+}
+function importPlain(text, name) { // a bare point file becomes its own site, using the current coordinate settings
+  const base = String(name || 'Points').replace(/\.[^.]+$/, '');
+  let nm = base, k = 2; while (S.sites.some(x => x.name === nm)) nm = `${base} (${k++})`;
+  addSite(nm, '', siteSnapshot(), { fileName: name, raw: text });
 }
 $('shareSite').onclick = () => {
   if (!S.points.length) { toast('Import the point file and set up the coordinates first.'); return; }
   const name = (prompt('Site name for the setup file', (S.site && S.site.name) || 'Site') || '').trim();
   if (!name) return;
   S.site = { name, created: new Date().toISOString() }; store.set('site', S.site);
+  if (!S.sites.some(x => x.id === S.siteId)) { const id = newId(); S.sites.push({ id, name, created: S.site.created, settings: {}, points: {} }); S.siteId = id; store.set('siteId', id); }
+  saveActiveSite();
   exportText(`site-setup-${name.replace(/[^\w-]+/g, '_')}.json`, siteSetupJSON(name));
   renderSetup();
 };
@@ -1616,13 +1765,13 @@ $('file').onchange = e => {
   r.onload = () => {
     const text = String(r.result); e.target.value = '';
     if (readSiteText(text, f.name)) { showTab('nav'); return; }
-    loadRaw(text, f.name);
+    importPlain(text, f.name);
   };
   r.onerror = () => toast('Could not read that file.');
   r.readAsText(f);
 };
 $('pastebtn').onclick = () => { const b = $('pastebox'); b.hidden = !b.hidden; if (!b.hidden) $('pastetext').focus(); };
-$('pasteok').onclick = () => { const v = $('pastetext').value; if (!v.trim()) { toast('Paste some coordinates first.'); return; } loadRaw(v, 'pasted text'); $('pastebox').hidden = true; };
+$('pasteok').onclick = () => { const v = $('pastetext').value; if (!v.trim()) { toast('Paste some coordinates first.'); return; } importPlain(v, 'Pasted points'); $('pastebox').hidden = true; };
 $('filter').oninput = renderList;
 $('datum').onchange = e => { S.set.datum = e.target.value; if (S.set.datum === 's4283') S.set.width = 6; else if (S.set.datum !== 'local') S.set.width = 3; saveSet(); if (S.raw) loadRaw(S.raw, S.fileName); else renderAll(); };
 document.querySelectorAll('[data-w]').forEach(b => b.onclick = () => { S.set.width = +b.dataset.w; saveSet(); if (S.raw) loadRaw(S.raw, S.fileName); else renderAll(); });
@@ -1630,7 +1779,7 @@ document.querySelectorAll('[data-o]').forEach(b => b.onclick = () => { S.set.ord
 $('wake').onchange = e => { S.set.wake = e.target.checked; saveSet(); setWake(S.set.wake); };
 $('compass').onchange = e => setCompass(e.target.checked);
 $('rec').onchange = e => { S.rec = e.target.checked; store.set('rec', S.rec); if (!S.rec) store.set('track', S.track); renderSetup(); };
-$('clrpts').onclick = () => { if (!confirm('Remove the imported points from this phone?')) return; S.raw = ''; S.points = []; S.target = null; S.site = null; store.set('raw', ''); store.set('target', null); store.set('site', null); renderAll(); };
+$('clrpts').onclick = () => { if (S.siteId && S.sites.some(x => x.id === S.siteId)) { removeSite(S.siteId); return; } if (!confirm('Remove the imported points from this phone?')) return; S.raw = ''; S.points = []; S.target = null; S.site = null; store.set('raw', ''); store.set('target', null); store.set('site', null); renderAll(); };
 $('clrlog').onclick = () => { if (!confirm('Delete logged positions, indoor checks and the recorded track?')) return; S.logged = []; S.track = []; S.checks = []; store.set('logged', []); store.set('track', []); store.set('checks', []); renderAll(); };
 $('logbtn').onclick = startLog;
 $('extconnect').onclick = extConnect;
