@@ -144,6 +144,9 @@ table.res th{text-align:right;font-weight:600;color:var(--muted);font-size:14px;
 table.res td{text-align:right;padding:6px;border-bottom:1px solid var(--line)}
 table.res th:first-child,table.res td:first-child{text-align:left}
 table.res tr.bad td{color:var(--lost);font-weight:700}
+
+.t-cal{border-top:1px solid var(--line);padding:12px 16px 14px}
+.t-cal .note{margin:8px 0 0}
 </style></head><body>
 <header class="status">
   <div class="wrap">
@@ -155,7 +158,7 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
 <main class="wrap">
   <!-- Navigate -->
   <section id="tab-nav">
-    <div class="block target" id="target"><div id="tbody"></div><div class="t-nav" id="tnav" hidden><button id="tprev" data-step="-1">Previous point</button><button id="tnext" data-step="1">Next point</button></div></div>
+    <div class="block target" id="target"><div id="tbody"></div><div class="t-nav" id="tnav" hidden><button id="tprev" data-step="-1">Previous point</button><button id="tnext" data-step="1">Next point</button></div><div class="t-cal" id="tcal" hidden><button class="btn wide" id="calbtn">Use as calibration point</button><p class="note">Stand still exactly on this point in open sky. Records a 15 s GPS average and links the local grid to it.</p></div></div>
     <div class="block plot">
       <canvas id="plot" aria-label="Plan view of your position and nearby points, north up"></canvas>
       <div class="zoom"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">−</button><button id="zfit" aria-label="Fit to target" style="font-size:14px">Fit</button></div>
@@ -210,6 +213,8 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
         <div class="seg"><button data-lm="points">Common points</button><button data-lm="params">Parameters</button></div></div>
       <div id="lpoints">
         <p class="note" style="margin:0 0 8px">One point per line: ID, local easting and northing (same column order as your point file), then easting and northing in <span id="lrefname"></span>. Use 3 or more points to get a residual check.</p>
+        <div class="seg" style="margin-bottom:6px"><button data-ls="shift">Shift only</button><button data-ls="full">Shift, rotation, scale</button></div>
+        <p class="note" style="margin:0 0 10px">Shift only keeps the rotation and scale from Parameters and averages the readings. It suits phone GPS best. The full fit needs 3 or more points far apart.</p>
         <textarea id="lptext" wrap="off" style="white-space:pre;overflow-x:auto" placeholder="GP1  100.000  200.000  411791.600  5656349.850&#10;GP2  350.000  200.000  412037.120  5656301.410&#10;GP3  350.000  500.000  412094.330  5656596.280"></textarea>
         <button class="btn primary wide" id="lfit" style="margin-top:10px">Compute transformation</button>
       </div>
@@ -461,6 +466,20 @@ function fitHelmert(rows) { // 4-parameter similarity, least squares on centred 
   const rms = Math.sqrt(res.reduce((t, r) => t + r.v * r.v, 0) / n);
   return { a, b, tE, tN, mE, res, rms, n };
 }
+function rotScale() {
+  const p = S.set.local.p;
+  const th = (pnum(p.rot) || 0) * (p.unit === 'gon' ? Math.PI / 200 : Math.PI / 180), sc = 1 + (pnum(p.ppm) || 0) * 1e-6;
+  return { a: sc * Math.cos(th), b: sc * Math.sin(th) };
+}
+function fitShift(rows) { // shift only: rotation and scale kept from Parameters; averages out GPS noise
+  const n = rows.length; if (!n) return null;
+  const { a, b } = rotScale();
+  const ts = rows.map(r => ({ tE: r.E - a * r.x - b * r.y, tN: r.N + b * r.x - a * r.y }));
+  const tE = ts.reduce((t, v) => t + v.tE, 0) / n, tN = ts.reduce((t, v) => t + v.tN, 0) / n;
+  const res = rows.map(r => { const vE = r.E - (tE + a * r.x + b * r.y), vN = r.N - (tN - b * r.x + a * r.y); return { id: r.id, vE, vN, v: Math.hypot(vE, vN) }; });
+  const rms = Math.sqrt(res.reduce((t, r) => t + r.v * r.v, 0) / n);
+  return { a, b, tE, tN, mE: rows.reduce((t, r) => t + r.E, 0) / n, res, rms, n, shift: true };
+}
 function paramsLT() {
   const p = S.set.local.p, E0 = refFix(pnum(p.E0)), N0 = pnum(p.N0), x0 = pnum(p.x0) || 0, y0 = pnum(p.y0) || 0;
   if (!isFinite(E0) || !isFinite(N0)) return null;
@@ -473,9 +492,9 @@ function buildLT() {
   LT = null; FIT = null;
   if (L.mode === 'points') {
     const { rows, bad } = parseCommon(L.pts || '');
-    const f = fitHelmert(rows);
+    const f = L.solve === 'shift' ? fitShift(rows) : fitHelmert(rows);
     FIT = { mode: 'points', rows, bad, f };
-    if (f && rows.length >= 3) { // does swapping local axes fit far better? (X-north convention)
+    if (f && !f.shift && rows.length >= 3) { // does swapping local axes fit far better? (X-north convention)
       const sw = fitHelmert(rows.map(r => ({ ...r, x: r.y, y: r.x })));
       if (sw && f.rms > 0.05 && sw.rms < f.rms * 0.2) FIT.swapHint = true;
     }
@@ -600,6 +619,7 @@ function onPos(p) {
     }
   }
   if (S.logging) S.logging.samples.push({ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc });
+  if (S.calib) S.calib.samples.push({ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc });
   renderLive();
 }
 const FRAMED = (() => { try { return window.self !== window.top; } catch { return true; } })();
@@ -692,6 +712,7 @@ function renderStatus() {
 function renderTarget() {
   const box = $('target'), t = targetPt();
   box.classList.remove('arrived');
+  $('tcal').hidden = !(isLocal() && t);
   if (!t) $('tnav').hidden = true;
   if (!S.points.length) {
     setHTML($('tbody'), `<div class="empty"><strong>No points loaded</strong><p>Import a CSV or TXT file with point ID, easting and northing to start staking out.</p><button class="btn primary" data-go="pts">Import points</button></div>`);
@@ -827,10 +848,12 @@ function renderLocalSetup() {
   $('lwidthbox').hidden = L.ref !== 's4283';
   document.querySelectorAll('[data-lw]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.lw === L.width)));
   document.querySelectorAll('[data-lm]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lm === L.mode)));
+  document.querySelectorAll('[data-ls]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.ls === (L.solve || 'full'))));
   $('lpoints').hidden = L.mode !== 'points'; $('lparams').hidden = L.mode !== 'params';
   $('lrefname').textContent = D.short;
   for (const k of ['x0', 'y0', 'E0', 'N0', 'rot', 'ppm']) { const el = $('lp_' + k); if (document.activeElement !== el) el.value = L.p[k]; }
-  document.querySelectorAll('[data-lu]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lu === L.p.unit)));
+  document.querySelectorAll('[data-ls]').forEach(b => b.onclick = () => { S.set.local.solve = b.dataset.ls; relink(); });
+document.querySelectorAll('[data-lu]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lu === L.p.unit)));
   if (document.activeElement !== $('lptext')) $('lptext').value = L.pts;
   const out = $('lresult');
   if (!FIT) { setHTML(out, ''); return; }
@@ -842,11 +865,13 @@ function renderLocalSetup() {
   if (FIT.mode === 'points') {
     const { rows, f, bad } = FIT;
     if (!rows.length) h = `<p class="note">Add at least 2 common points, then tap Compute transformation.</p>`;
-    else if (!f) h = `<p class="summary warn">Need at least 2 different points to compute the link. ${rows.length} usable line${rows.length === 1 ? '' : 's'} found.</p>`;
+    else if (!f) h = `<p class="summary warn">A full fit needs at least 2 different points. ${rows.length} usable line${rows.length === 1 ? '' : 's'} found. Add another point, or switch to Shift only.</p>`;
     else {
       const sc = Math.abs((Math.hypot(f.a, f.b) - 1) * 1e6);
-      h = `<p class="summary">Linked to ${esc(D.short)} from ${f.n} points. ${desc(f)}</p>`;
-      if (f.n === 2) h += `<p class="note">Two points always fit exactly, so there's no check. Add a third point to see residuals.</p>`;
+      h = f.shift ? `<p class="summary">Linked to ${esc(D.short)} from ${f.n} point${f.n === 1 ? '' : 's'}, shift only. ${desc(f)}</p>`
+        : `<p class="summary">Linked to ${esc(D.short)} from ${f.n} points. ${desc(f)}</p>`;
+      if (f.shift && f.n === 1) h += `<p class="note">One point always fits exactly, so there's no check. Add more points to see how much the GPS readings scatter.</p>`;
+      else if (!f.shift && f.n === 2) h += `<p class="note">Two points always fit exactly, so there's no check. Add a third point to see residuals.</p>`;
       else {
         const worst = Math.max(...f.res.map(r => r.v));
         h += `<p class="summary">RMS residual ${f.rms.toFixed(3)} m, largest ${worst.toFixed(3)} m.</p>`;
@@ -854,7 +879,7 @@ function renderLocalSetup() {
           f.res.map(r => `<tr class="${r.v > Math.max(0.03, 3 * f.rms) && r.v === worst ? 'bad' : ''}"><td>${esc(r.id)}</td><td>${mm(r.vE)}</td><td>${mm(r.vN)}</td><td>${mm(r.v)}</td></tr>`).join('') + `</tbody></table>`;
       }
       if (FIT.swapHint) h += `<p class="summary warn">The local axes look swapped. Try "Northing first" for the column order above.</p>`;
-      if (sc > 2000) h += `<p class="summary warn">Scale is off by ${Math.round(sc)} ppm. Check the units, the column order and the known system.</p>`;
+      if (!f.shift && sc > 2000) h += `<p class="summary warn">Scale is off by ${Math.round(sc)} ppm. Check the units, the column order and the known system.</p>`;
     }
     if (bad) h += `<p class="note">${bad} line${bad === 1 ? '' : 's'} skipped: each needs an ID, two local and two known coordinates.</p>`;
   } else {
@@ -877,10 +902,44 @@ document.querySelectorAll('[data-lw]').forEach(b => b.onclick = () => { S.set.lo
 document.querySelectorAll('[data-lm]').forEach(b => b.onclick = () => { S.set.local.mode = b.dataset.lm; relink(); });
 document.querySelectorAll('[data-lu]').forEach(b => b.onclick = () => { S.set.local.p.unit = b.dataset.lu; renderLocalSetup(); });
 $('lfit').onclick = () => { S.set.local.pts = $('lptext').value; relink('Local grid linked'); if (!LT) toast('Could not compute. See the message below.'); };
+// keep typed parameter values in settings as they are typed, so re-renders (e.g. the gon/degree toggle) never wipe them
+for (const k of ['x0', 'y0', 'E0', 'N0', 'rot', 'ppm']) $('lp_' + k).addEventListener('input', e => { S.set.local.p[k] = e.target.value.trim(); saveSet(); });
 $('lapply').onclick = () => {
   for (const k of ['x0', 'y0', 'E0', 'N0', 'rot', 'ppm']) S.set.local.p[k] = $('lp_' + k).value.trim();
   relink('Local grid linked'); if (!LT) toast('Enter the easting and northing of the local origin.');
 };
+
+/* ---------- calibrate on the point you're standing on ---------- */
+const CAL_S = 15;
+function startCal() {
+  const t = targetPt();
+  if (!isLocal() || !t) return;
+  if (!S.fix || fixState() !== 'live') { toast('Needs a live GPS fix.'); return; }
+  if (S.calib || S.logging) return;
+  const btn = $('calbtn');
+  S.calib = { samples: [], t0: Date.now(), pt: t }; // only fresh fixes, never one from before the tap
+  btn.disabled = true;
+  const tick = () => {
+    const left = CAL_S - Math.floor((Date.now() - S.calib.t0) / 1000);
+    if (left > 0) { btn.textContent = `Hold still on ${S.calib.pt.id}… ${left} s`; setTimeout(tick, 250); return; }
+    const { samples: sm, pt } = S.calib; S.calib = null;
+    btn.disabled = false; btn.textContent = 'Use as calibration point';
+    if (sm.length < 5) { toast(`Only ${sm.length} GPS updates arrived. Nothing saved. Try again in the open.`); return; }
+    const lat = sm.reduce((a, v) => a + v.lat, 0) / sm.length, lon = sm.reduce((a, v) => a + v.lon, 0) / sm.length;
+    const L = S.set.local;
+    const r = GEO.wgsToGrid(lat, lon, L.ref, LT ? LT.zone : undefined, L.width);
+    const id = String(pt.id).replace(/\s+/g, '_');
+    const loc = S.set.order === 'NE' ? `${pt.N.toFixed(3)} ${pt.E.toFixed(3)}` : `${pt.E.toFixed(3)} ${pt.N.toFixed(3)}`;
+    L.pts = ((L.pts || '').trim() ? L.pts.trim() + '\n' : '') + `${id} ${loc} ${r.E.toFixed(3)} ${r.N.toFixed(3)}`;
+    if (L.mode !== 'points' && L.solve == null) L.solve = pnum(L.p.rot) ? 'shift' : 'full';
+    L.mode = 'points';
+    relink();
+    const n = FIT && FIT.rows ? FIT.rows.length : 1;
+    toast(LT ? `Calibrated with ${n} point${n === 1 ? '' : 's'}${FIT.f && FIT.f.n > 1 ? `, scatter ${FIT.f.rms.toFixed(1)} m` : ''}.` : 'Point saved. Add one more to compute the grid.');
+  };
+  tick();
+}
+$('calbtn').onclick = startCal;
 
 /* ---------- plot ---------- */
 function drawPlot() {

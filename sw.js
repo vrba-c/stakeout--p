@@ -1,5 +1,5 @@
 // Caches the app so it opens and runs with no internet connection.
-const CACHE = 'stakeout-v2';
+const CACHE = 'stakeout-v3';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
