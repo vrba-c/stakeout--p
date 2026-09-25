@@ -1,0 +1,879 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#D8126E"><link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon-192.png"><link rel="apple-touch-icon" href="icon-192.png">
+<title>Stakeout – GPS to point file</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  --bg:#EEF1F0; --surface:#FFFFFF; --ink:#172024; --muted:#56636A; --line:#D2D9D7;
+  --flag:#D8126E; --flag-soft:#FBE3EF; --live:#1E7F48; --stale:#B86E00; --lost:#C22A2A; --me:#1F5FBF;
+  --tabh:64px;
+  --font:"Barlow",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-c:"Barlow Semi Condensed","Barlow",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0F1618; --surface:#172124; --ink:#E6EDEB; --muted:#98A6AB; --line:#2A383C;
+    --flag:#FF4A9A; --flag-soft:#3A1628; --live:#43C07A; --stale:#F0A53A; --lost:#FF6B6B; --me:#6FA8FF;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0F1618; --surface:#172124; --ink:#E6EDEB; --muted:#98A6AB; --line:#2A383C;
+  --flag:#FF4A9A; --flag-soft:#3A1628; --live:#43C07A; --stale:#F0A53A; --lost:#FF6B6B; --me:#6FA8FF;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px);height:100%}
+body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:var(--font);font-size:17px;line-height:1.45;
+  font-variant-numeric:tabular-nums;-webkit-text-size-adjust:100%;padding-bottom:calc(var(--tabh) + 16px)}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid var(--flag);outline-offset:2px}
+.wrap{max-width:560px;margin:0 auto;padding:0 14px}
+
+/* status strip */
+.status{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
+.status .wrap{display:flex;align-items:center;gap:12px;min-height:52px}
+.fixstate{display:flex;align-items:center;gap:8px;font-family:var(--font-c);font-weight:600;font-size:17px}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--muted);flex:none}
+.fixstate[data-s="live"] .dot{background:var(--live);box-shadow:0 0 0 4px color-mix(in srgb,var(--live) 22%,transparent)}
+.fixstate[data-s="stale"] .dot{background:var(--stale)}
+.fixstate[data-s="lost"] .dot{background:var(--lost)}
+.fixstate[data-s="stale"]{color:var(--stale)} .fixstate[data-s="lost"]{color:var(--lost)}
+.acc{margin-left:auto;font-family:var(--font-c);font-size:17px;color:var(--muted)}
+.acc b{color:var(--ink);font-weight:600}
+
+section[hidden]{display:none}
+.block{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px}
+h2{font-family:var(--font-c);font-weight:600;font-size:15px;color:var(--muted);margin:0 0 10px;letter-spacing:.01em}
+
+/* stakeout hero */
+.target{padding:0;overflow:hidden}
+.t-head{display:flex;align-items:baseline;gap:10px;padding:14px 16px 0}
+.t-id{font-family:var(--font-c);font-weight:700;font-size:26px;line-height:1.1;word-break:break-all}
+.t-meta{color:var(--muted);font-size:15px}
+.t-body{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:center;padding:10px 16px 14px}
+.dial{width:150px;height:150px;display:block}
+.dist{font-family:var(--font-c);font-weight:700;font-size:52px;line-height:1;letter-spacing:-.01em}
+.dist small{font-size:24px;font-weight:600;margin-left:3px}
+.deltas{margin-top:10px;display:grid;gap:2px;font-size:19px;font-weight:500}
+.deltas span{color:var(--muted);font-weight:400}
+.t-warn{margin:0;padding:10px 16px;background:color-mix(in srgb,var(--stale) 14%,var(--surface));color:var(--ink);font-size:15px;border-top:1px solid var(--line)}
+.t-warn.lost{background:color-mix(in srgb,var(--lost) 14%,var(--surface))}
+.t-nav{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--line)}
+.t-nav button{background:none;border:0;padding:14px;font-family:var(--font-c);font-weight:600;font-size:17px}
+.t-nav button+button{border-left:1px solid var(--line)}
+.t-nav button:disabled{color:var(--muted);opacity:.5}
+.arrived .dist{color:var(--live)}
+
+.empty{padding:22px 16px;text-align:left}
+.empty p{margin:0 0 14px;color:var(--muted)}
+.empty strong{display:block;font-family:var(--font-c);font-size:22px;color:var(--ink);margin-bottom:4px}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;padding:0 18px;border-radius:10px;border:1px solid var(--line);background:var(--surface);font-weight:600}
+.btn.primary{background:var(--flag);border-color:var(--flag);color:#fff}
+.btn.wide{width:100%}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row .btn{flex:1}
+
+/* plot */
+.plot{position:relative;padding:0;overflow:hidden}
+canvas{display:block;width:100%;height:280px;touch-action:none}
+.zoom{position:absolute;right:10px;top:10px;display:grid;gap:6px}
+.zoom button{width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:var(--surface);font-size:20px;font-weight:600;line-height:1}
+.scale{position:absolute;left:12px;bottom:10px;font-size:13px;color:var(--muted);font-family:var(--font-c)}
+
+/* coordinates */
+dl.coords{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0}
+dl.coords dt{color:var(--muted);font-size:15px;align-self:baseline}
+dl.coords dd{margin:0;font-family:var(--font-c);font-size:20px;font-weight:600;text-align:right}
+.note{font-size:14px;color:var(--muted);margin:10px 0 0}
+
+/* points */
+.search{width:100%;min-height:48px;border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:0 14px}
+.plist{list-style:none;margin:10px -16px -16px;padding:0}
+.plist li{border-top:1px solid var(--line)}
+.plist button{width:100%;display:grid;grid-template-columns:1fr auto;gap:2px 12px;text-align:left;background:none;border:0;padding:12px 16px}
+.plist .pid{font-family:var(--font-c);font-weight:700;font-size:19px;word-break:break-all}
+.plist .pd{font-family:var(--font-c);font-weight:600;font-size:18px;text-align:right}
+.plist .pc{grid-column:1/-1;font-size:14px;color:var(--muted)}
+.plist li.on{background:var(--flag-soft);box-shadow:inset 4px 0 0 var(--flag)}
+.more{padding:12px 16px;color:var(--muted);font-size:14px}
+.summary{font-size:15px;margin:12px 0 0}
+.summary.warn{color:var(--lost)}
+textarea{width:100%;min-height:140px;border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:10px;font-size:15px;font-family:var(--font-c)}
+code{font-family:var(--font-c);background:var(--bg);padding:1px 5px;border-radius:5px}
+
+/* setup */
+label.field{display:block;margin-bottom:14px}
+label.field>span{display:block;font-size:15px;color:var(--muted);margin-bottom:6px}
+select{width:100%;min-height:48px;border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:0 12px}
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.seg button{border:0;background:var(--bg);min-height:46px;font-weight:600}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.toggle:first-of-type{border-top:0}
+.toggle small{display:block;color:var(--muted);font-size:14px}
+.sw{appearance:none;-webkit-appearance:none;width:52px;height:30px;border-radius:15px;background:var(--line);position:relative;flex:none;cursor:pointer;margin:0}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;transition:left .15s}
+.sw:checked{background:var(--flag)} .sw:checked::after{left:25px}
+
+/* tabs */
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;background:var(--surface);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
+.tabs .wrap{display:grid;grid-template-columns:repeat(3,1fr);height:var(--tabh);padding:0}
+.tabs button{background:none;border:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-family:var(--font-c);font-weight:600;font-size:14px;color:var(--muted)}
+.tabs button svg{width:24px;height:24px}
+.tabs button[aria-selected="true"]{color:var(--flag)}
+
+.toast{position:fixed;left:50%;bottom:calc(var(--tabh) + env(safe-area-inset-bottom,0px) + 14px);transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:15px;z-index:20;max-width:90vw;opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.show{opacity:1}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);width:min(92vw,520px);padding:16px}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+@media (max-width:360px){.t-body{grid-template-columns:120px 1fr}.dial{width:120px;height:120px}.dist{font-size:42px}}
+</style></head><body>
+<header class="status">
+  <div class="wrap">
+    <div class="fixstate" id="fixstate" data-s="wait"><span class="dot"></span><span id="fixtext">Waiting for GPS</span></div>
+    <div class="acc" id="acc"></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- Navigate -->
+  <section id="tab-nav">
+    <div class="block target" id="target"><div id="tbody"></div><div class="t-nav" id="tnav" hidden><button id="tprev" data-step="-1">Previous point</button><button id="tnext" data-step="1">Next point</button></div></div>
+    <div class="block plot">
+      <canvas id="plot" aria-label="Plan view of your position and nearby points, north up"></canvas>
+      <div class="zoom"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">−</button><button id="zfit" aria-label="Fit to target" style="font-size:14px">Fit</button></div>
+      <div class="scale" id="scale"></div>
+    </div>
+    <div class="block">
+      <h2 id="mehead">Your position</h2>
+      <dl class="coords" id="mecoords"><dt>Status</dt><dd>—</dd></dl>
+      <div class="row" style="margin-top:14px"><button class="btn wide" id="logbtn">Log position (5 s average)</button></div>
+      <p class="note" id="lognote"></p>
+    </div>
+  </section>
+
+  <!-- Points -->
+  <section id="tab-pts" hidden>
+    <div class="block">
+      <div class="row">
+        <label class="btn primary" for="file" style="flex:1">Import point file</label>
+        <button class="btn" id="pastebtn">Paste</button>
+      </div>
+      <input type="file" id="file" accept=".csv,.txt,.pts,.dat,.xyz,.asc,text/*" hidden>
+      <div id="pastebox" hidden style="margin-top:12px">
+        <textarea id="pastetext" placeholder="1001  5411893.62  5658167.51  112.40  corner A"></textarea>
+        <div class="row" style="margin-top:8px"><button class="btn primary" id="pasteok">Load these points</button></div>
+      </div>
+      <p class="summary" id="summary"></p>
+    </div>
+    <div class="block" id="listblock">
+      <input class="search" id="filter" type="search" placeholder="Find point by ID or code" autocomplete="off">
+      <ul class="plist" id="plist"></ul>
+    </div>
+  </section>
+
+  <!-- Setup -->
+  <section id="tab-set" hidden>
+    <div class="block">
+      <h2>Point file coordinates</h2>
+      <label class="field"><span>Coordinate system</span>
+        <select id="datum"></select></label>
+      <div class="field" id="widthbox" style="margin-bottom:14px"><span style="display:block;font-size:15px;color:var(--muted);margin-bottom:6px">Zone width</span>
+        <div class="seg"><button data-w="3">3° zones</button><button data-w="6">6° zones</button></div></div>
+      <div class="field"><span style="display:block;font-size:15px;color:var(--muted);margin-bottom:6px">Column order after the point ID</span>
+        <div class="seg"><button data-o="EN">Easting first</button><button data-o="NE">Northing first</button></div></div>
+      <p class="note" id="datumnote"></p>
+    </div>
+    <div class="block">
+      <h2>In the field</h2>
+      <div class="toggle"><div>Keep screen on<small>Stops the phone locking while you walk to a point</small></div><input type="checkbox" class="sw" id="wake"></div>
+      <div class="toggle"><div>Use compass<small>Turns the arrow to match where you're facing. Unreliable next to steel and rebar.</small></div><input type="checkbox" class="sw" id="compass"></div>
+      <div class="toggle"><div>Record track<small id="trackinfo">Saves your path on this phone</small></div><input type="checkbox" class="sw" id="rec"></div>
+    </div>
+    <div class="block">
+      <h2>Export</h2>
+      <div class="row"><button class="btn" id="exlog">Logged positions</button><button class="btn" id="extrack">Track</button></div>
+      <p class="note">CSV with ID, easting and northing in the coordinate system above, plus WGS84 lat/lon and GPS accuracy.</p>
+    </div>
+    <div class="block">
+      <h2>Stored on this phone</h2>
+      <div class="row"><button class="btn" id="clrpts">Clear points</button><button class="btn" id="clrlog">Clear logs and track</button></div>
+    </div>
+  </section>
+</main>
+
+<nav class="tabs" role="tablist">
+  <div class="wrap">
+    <button role="tab" data-tab="nav" aria-selected="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 5l3 9-3-2-3 2z" fill="currentColor"/></svg>Stake out</button>
+    <button role="tab" data-tab="pts" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5l4 4M9 5L5 9M15 15l4 4M19 15l-4 4M15 5l4 4M19 5l-4 4"/></svg>Points</button>
+    <button role="tab" data-tab="set" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Setup</button>
+  </div>
+</nav>
+
+<div class="toast" id="toast" role="status"></div>
+<dialog id="copydlg"><h2>Copy this text</h2><textarea id="copytext" readonly></textarea><div class="row" style="margin-top:10px"><button class="btn primary" id="copybtn">Copy</button><button class="btn" id="copyclose">Close</button></div></dialog>
+<script>
+// ---- Geodesy core: Krüger-series transverse Mercator + 7-parameter Helmert ----
+const GEO = (() => {
+  const RAD = Math.PI / 180, ASEC = RAD / 3600;
+  const ELL = {
+    wgs84: { a: 6378137.0, f: 1 / 298.257223563 },
+    grs80: { a: 6378137.0, f: 1 / 298.257222101 },
+    bessel: { a: 6377397.155, f: 1 / 299.1528128 },
+    krass: { a: 6378245.0, f: 1 / 298.3 },
+  };
+  function tmConsts(e) {
+    if (e._tm) return e._tm;
+    const n = e.f / (2 - e.f), n2 = n * n, n3 = n2 * n, n4 = n3 * n;
+    const A = e.a / (1 + n) * (1 + n2 / 4 + n4 / 64);
+    const al = [0, n / 2 - 2 / 3 * n2 + 5 / 16 * n3 + 41 / 180 * n4,
+      13 / 48 * n2 - 3 / 5 * n3 + 557 / 1440 * n4,
+      61 / 240 * n3 - 103 / 140 * n4, 49561 / 161280 * n4];
+    const be = [0, n / 2 - 2 / 3 * n2 + 37 / 96 * n3 - 1 / 360 * n4,
+      1 / 48 * n2 + 1 / 15 * n3 - 437 / 1440 * n4,
+      17 / 480 * n3 - 37 / 840 * n4, 4397 / 161280 * n4];
+    const de = [0, 2 * n - 2 / 3 * n2 - 2 * n3 + 116 / 45 * n4,
+      7 / 3 * n2 - 8 / 5 * n3 - 227 / 45 * n4,
+      56 / 15 * n3 - 136 / 35 * n4, 4279 / 630 * n4];
+    const ecc = Math.sqrt(e.f * (2 - e.f));
+    return (e._tm = { A, al, be, de, ecc });
+  }
+  function tmForward(latDeg, lonDeg, p) {
+    const e = ELL[p.ell], c = tmConsts(e);
+    const phi = latDeg * RAD, dl = (lonDeg - p.lon0) * RAD, s = Math.sin(phi);
+    const t = Math.sinh(Math.atanh(s) - c.ecc * Math.atanh(c.ecc * s));
+    const xi = Math.atan2(t, Math.cos(dl)), eta = Math.atanh(Math.sin(dl) / Math.sqrt(1 + t * t));
+    let x = xi, y = eta;
+    for (let j = 1; j <= 4; j++) {
+      x += c.al[j] * Math.sin(2 * j * xi) * Math.cosh(2 * j * eta);
+      y += c.al[j] * Math.cos(2 * j * xi) * Math.sinh(2 * j * eta);
+    }
+    return { E: p.x0 + p.k0 * c.A * y, N: p.k0 * c.A * x };
+  }
+  function tmInverse(E, N, p) {
+    const e = ELL[p.ell], c = tmConsts(e);
+    const xi = N / (p.k0 * c.A), eta = (E - p.x0) / (p.k0 * c.A);
+    let xp = xi, yp = eta;
+    for (let j = 1; j <= 4; j++) {
+      xp -= c.be[j] * Math.sin(2 * j * xi) * Math.cosh(2 * j * eta);
+      yp -= c.be[j] * Math.cos(2 * j * xi) * Math.sinh(2 * j * eta);
+    }
+    const chi = Math.asin(Math.sin(xp) / Math.cosh(yp));
+    let phi = chi;
+    for (let j = 1; j <= 4; j++) phi += c.de[j] * Math.sin(2 * j * chi);
+    const lon = p.lon0 + Math.atan2(Math.sinh(yp), Math.cos(xp)) / RAD;
+    return { lat: phi / RAD, lon };
+  }
+  function toECEF(lat, lon, h, e) {
+    const e2 = e.f * (2 - e.f), p = lat * RAD, l = lon * RAD;
+    const Nr = e.a / Math.sqrt(1 - e2 * Math.sin(p) ** 2);
+    return [(Nr + h) * Math.cos(p) * Math.cos(l), (Nr + h) * Math.cos(p) * Math.sin(l), (Nr * (1 - e2) + h) * Math.sin(p)];
+  }
+  function fromECEF(X, Y, Z, e) {
+    const e2 = e.f * (2 - e.f), p = Math.hypot(X, Y), lon = Math.atan2(Y, X);
+    let lat = Math.atan2(Z, p * (1 - e2)), h = 0;
+    for (let i = 0; i < 6; i++) {
+      const Nr = e.a / Math.sqrt(1 - e2 * Math.sin(lat) ** 2);
+      h = p / Math.cos(lat) - Nr;
+      lat = Math.atan2(Z, p * (1 - e2 * Nr / (Nr + h)));
+    }
+    return { lat: lat / RAD, lon: lon / RAD, h };
+  }
+  // position-vector convention (as PROJ towgs84); sign=-1 for the inverse direction
+  function helmert([X, Y, Z], P, sign) {
+    const tx = sign * P[0], ty = sign * P[1], tz = sign * P[2];
+    const rx = sign * P[3] * ASEC, ry = sign * P[4] * ASEC, rz = sign * P[5] * ASEC, s = 1 + sign * P[6] * 1e-6;
+    return [tx + s * (X - rz * Y + ry * Z), ty + s * (rz * X + Y - rx * Z), tz + s * (-ry * X + rx * Y + Z)];
+  }
+  const DATUMS = {
+    rd83: { label: 'GK – RD/83 or DHDN, East Germany', short: 'RD/83', ell: 'bessel', tw: [612.4, 77.0, 440.2, -0.054, 0.057, -2.797, 2.55], acc: '≈2 m', gk: true },
+    dhdn: { label: 'GK – DHDN, West Germany', short: 'DHDN', ell: 'bessel', tw: [598.1, 73.7, 418.2, 0.202, 0.045, -2.455, 6.7], acc: '≈3 m', gk: true },
+    s4283: { label: 'GK – S42/83 (Krassowsky)', short: 'S42/83', ell: 'krass', tw: [24, -123, -94, 0.02, -0.25, -0.13, 1.1], acc: '≈2 m', gk: true },
+    utm33: { label: 'ETRS89 / UTM 33N', short: 'UTM33', ell: 'grs80', tw: null, acc: 'exact', gk: false, zone: 33 },
+    utm32: { label: 'ETRS89 / UTM 32N', short: 'UTM32', ell: 'grs80', tw: null, acc: 'exact', gk: false, zone: 32 },
+  };
+  // projection params for a datum + easting (auto zone from leading digit for GK)
+  function projFor(dkey, E, width) {
+    const d = DATUMS[dkey];
+    if (!d.gk) return { ell: d.ell, lon0: d.zone * 6 - 183, k0: 0.9996, x0: 500000, zone: d.zone };
+    const z = Math.floor(E / 1e6);
+    const lon0 = width === 6 ? z * 6 - 3 : z * 3;
+    return { ell: d.ell, lon0, k0: 1, x0: z * 1e6 + 500000, zone: z };
+  }
+  function projForZone(dkey, z, width) {
+    const d = DATUMS[dkey];
+    if (!d.gk) return projFor(dkey, 0, width);
+    return { ell: d.ell, lon0: width === 6 ? z * 6 - 3 : z * 3, k0: 1, x0: z * 1e6 + 500000, zone: z };
+  }
+  function bestZone(dkey, lon, width) {
+    const d = DATUMS[dkey];
+    if (!d.gk) return d.zone;
+    return width === 6 ? Math.floor((lon + 6) / 6) : Math.round(lon / 3);
+  }
+  function stripUTM(E, dkey) { // accept eastings written with zone prefix, e.g. 33412345.6
+    const d = DATUMS[dkey];
+    if (!d.gk && E > 1e7) return E - d.zone * 1e6;
+    return E;
+  }
+  function gridToWGS(E, N, dkey, width) {
+    const d = DATUMS[dkey];
+    E = stripUTM(E, dkey);
+    const p = projFor(dkey, E, width);
+    const g = tmInverse(E, N, p);
+    if (!d.tw) return { lat: g.lat, lon: g.lon, zone: p.zone };
+    const w = fromECEF(...helmert(toECEF(g.lat, g.lon, 0, ELL[d.ell]), d.tw, 1), ELL.wgs84);
+    return { lat: w.lat, lon: w.lon, zone: p.zone };
+  }
+  function wgsToGrid(lat, lon, dkey, zone, width) {
+    const d = DATUMS[dkey];
+    let la = lat, lo = lon;
+    if (d.tw) {
+      const g = fromECEF(...helmert(toECEF(lat, lon, 0, ELL.wgs84), d.tw, -1), ELL[d.ell]); la = g.lat; lo = g.lon;
+      for (let i = 0; i < 2; i++) { // refine: the negated Helmert is only an approximate inverse
+        const f = fromECEF(...helmert(toECEF(la, lo, 0, ELL[d.ell]), d.tw, 1), ELL.wgs84);
+        la -= f.lat - lat; lo -= f.lon - lon;
+      }
+    }
+    const z = zone ?? bestZone(dkey, lo, width);
+    const p = projForZone(dkey, z, width);
+    const r = tmForward(la, lo, p);
+    return { E: r.E, N: r.N, zone: z };
+  }
+  return { DATUMS, gridToWGS, wgsToGrid };
+})();
+if (typeof module !== 'undefined') module.exports = GEO;
+
+(() => {
+const $ = id => document.getElementById(id);
+const RAD = Math.PI / 180;
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('stk.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('stk.' + k, JSON.stringify(v)); return true; } catch { return false; } },
+};
+const S = {
+  set: Object.assign({ datum: 'rd83', width: 3, order: 'EN', wake: false }, store.get('settings', {})),
+  raw: store.get('raw', ''), fileName: store.get('fileName', ''),
+  points: [], skipped: 0, outside: 0,
+  target: store.get('target', null),
+  fix: null, lastErr: null, heading: null, headingT: 0,
+  track: store.get('track', []), rec: store.get('rec', false),
+  logged: store.get('logged', []), logging: null,
+  zoom: 1, tab: 'nav',
+};
+const saveSet = () => store.set('settings', S.set);
+
+/* ---------- formatting ---------- */
+function fmtDist(m) {
+  if (m == null || !isFinite(m)) return '—';
+  if (m >= 1000) return (m / 1000).toFixed(m >= 10000 ? 1 : 2) + ' km';
+  return m.toFixed(m < 10 ? 2 : 1) + ' m';
+}
+function distParts(m) {
+  if (m >= 1000) return [(m / 1000).toFixed(m >= 10000 ? 1 : 2), 'km'];
+  return [m.toFixed(m < 10 ? 2 : 1), 'm'];
+}
+const f3 = v => v.toFixed(3);
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function setHTML(el, h) { if (el._h !== h) { el._h = h; el.innerHTML = h; return true; } return false; }
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2600); }
+
+/* ---------- geometry on WGS84 ---------- */
+function haversine(a, b) {
+  const R = 6371008.8, dLat = (b.lat - a.lat) * RAD, dLon = (b.lon - a.lon) * RAD;
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * RAD) * Math.cos(b.lat * RAD) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+function bearing(a, b) {
+  const y = Math.sin((b.lon - a.lon) * RAD) * Math.cos(b.lat * RAD);
+  const x = Math.cos(a.lat * RAD) * Math.sin(b.lat * RAD) - Math.sin(a.lat * RAD) * Math.cos(b.lat * RAD) * Math.cos((b.lon - a.lon) * RAD);
+  return (Math.atan2(y, x) / RAD + 360) % 360;
+}
+function enu(origin, p) { // local metres east/north, fine at site scale
+  const R = 6371008.8;
+  return { x: (p.lon - origin.lon) * RAD * R * Math.cos(origin.lat * RAD), y: (p.lat - origin.lat) * RAD * R };
+}
+
+/* ---------- point file parsing ---------- */
+function num(tok, decComma) {
+  if (tok == null) return NaN;
+  let t = tok.trim();
+  if (decComma) t = t.replace(',', '.');
+  if (!/^[-+]?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(t)) return NaN;
+  return Number(t);
+}
+function splitLine(line) {
+  if (line.includes(';')) return { toks: line.split(';'), dc: true };
+  if (line.includes('\t')) return { toks: line.split('\t'), dc: true };
+  const ws = line.trim().split(/\s+/);
+  if (ws.length >= 3 && ws.filter(t => !isNaN(num(t, true))).length >= 2) return { toks: ws, dc: true };
+  if (line.includes(',')) return { toks: line.split(','), dc: false };
+  return { toks: ws, dc: true };
+}
+function parsePoints(raw) {
+  const out = [], lines = raw.split(/\r?\n/);
+  let skipped = 0, outside = 0, n = 0;
+  for (const lineRaw of lines) {
+    const line = lineRaw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+    n++;
+    const { toks, dc } = splitLine(line);
+    const T = toks.map(t => t.trim().replace(/^"|"$/g, '')).filter(t => t !== '');
+    const V = T.map(t => num(t, dc));
+    let k = -1;
+    for (let i = 0; i < V.length - 1; i++) if (Math.abs(V[i]) > 1e5 && Math.abs(V[i + 1]) > 1e5) { k = i; break; }
+    if (k < 0) { skipped++; continue; }
+    let E = V[k], N = V[k + 1];
+    if (S.set.order === 'NE') [E, N] = [N, E];
+    const id = k > 0 ? T.slice(0, k).join(' ') : 'P' + n;
+    let H = null, rest = T.slice(k + 2);
+    if (rest.length && isFinite(V[k + 2]) && Math.abs(V[k + 2]) < 10000) { H = V[k + 2]; rest = rest.slice(1); }
+    try {
+      const g = GEO.gridToWGS(E, N, S.set.datum, S.set.width);
+      if (!isFinite(g.lat) || !isFinite(g.lon)) { skipped++; continue; }
+      if (g.lat < 47 || g.lat > 55.5 || g.lon < 5.5 || g.lon > 15.5) outside++;
+      out.push({ id, E, N, H, code: rest.join(' '), lat: g.lat, lon: g.lon, zone: g.zone, i: out.length });
+    } catch { skipped++; }
+  }
+  return { points: out, skipped, outside };
+}
+function loadRaw(raw, name) {
+  S.raw = raw; S.fileName = name || '';
+  const r = parsePoints(raw);
+  S.points = r.points; S.skipped = r.skipped; S.outside = r.outside;
+  if (S.target && !S.points.some(p => p.id === S.target)) S.target = null;
+  if (!store.set('raw', raw)) toast('File too large to keep after closing. It works for this session.');
+  store.set('fileName', S.fileName); store.set('target', S.target);
+  renderAll();
+}
+
+/* ---------- GPS ---------- */
+function fixAge() { return S.fix ? (Date.now() - S.fix.t) / 1000 : Infinity; }
+function fixState() {
+  if (!S.fix && (S.errCode === 1 || S.errCode === 2)) return 'lost';
+  if (!S.fix) return 'wait';
+  const a = fixAge();
+  return a < 5 ? 'live' : a < 30 ? 'stale' : 'lost';
+}
+function effAcc() { // grows while no update arrives (walking pace ~1.4 m/s)
+  if (!S.fix) return null;
+  const a = fixAge();
+  return S.fix.acc + (a > 3 ? 1.4 * (a - 3) : 0);
+}
+function onPos(p) {
+  const c = p.coords;
+  S.lastErr = null; S.errCode = null;
+  S.fix = { lat: c.latitude, lon: c.longitude, acc: c.accuracy, alt: c.altitude, altAcc: c.altitudeAccuracy, speed: c.speed, course: c.heading, t: Date.now() };
+  if (S.rec) {
+    const last = S.track[S.track.length - 1];
+    if (!last || haversine(last, S.fix) > Math.max(1, S.fix.acc * 0.3) || Date.now() - last.t > 30000) {
+      S.track.push({ lat: S.fix.lat, lon: S.fix.lon, acc: Math.round(S.fix.acc * 10) / 10, t: S.fix.t });
+      if (S.track.length > 20000) S.track.shift();
+      if (S.track.length % 10 === 0) store.set('track', S.track);
+    }
+  }
+  if (S.logging) S.logging.samples.push({ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc });
+  renderLive();
+}
+const FRAMED = (() => { try { return window.self !== window.top; } catch { return true; } })();
+function onErr(e) {
+  S.errCode = e.code;
+  S.lastErr = e.code === 1
+    ? (FRAMED ? 'Location is blocked for this page inside the app. Check that the app has location permission (precise), then tap Try again. If it still fails, open the page in Chrome or Safari.'
+              : 'Location is blocked for this page. Allow location for this site in your browser, with precise location on, then tap Try again.')
+    : e.code === 2 ? 'The phone has no position yet. Check that precise location is on and move to open sky.'
+    : 'Still searching for satellites. This can take a minute on a cold start, especially indoors.';
+  renderLive();
+}
+let watchId = null;
+const GEO_OPTS = { enableHighAccuracy: true, maximumAge: 0, timeout: 60000 };
+function startGPS() {
+  if (!('geolocation' in navigator)) { S.errCode = 2; S.lastErr = 'This browser has no location support.'; return; }
+  if (!window.isSecureContext) { S.errCode = 1; S.lastErr = 'Location only works on a secure (https) page.'; return; }
+  if (watchId != null) navigator.geolocation.clearWatch(watchId);
+  watchId = navigator.geolocation.watchPosition(onPos, onErr, GEO_OPTS);
+}
+function retryGPS() { // called from a tap, which lets the browser show its permission prompt again
+  S.errCode = null; S.lastErr = 'Asking for location…'; renderAll();
+  try { navigator.geolocation.getCurrentPosition(onPos, onErr, GEO_OPTS); } catch { }
+  startGPS();
+}
+
+/* ---------- compass ---------- */
+let compassOn = false;
+function onOrient(e) {
+  let h = null;
+  if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
+  else if (e.absolute && typeof e.alpha === 'number') h = 360 - e.alpha;
+  if (h == null) return;
+  const so = (screen.orientation && screen.orientation.angle) || 0;
+  S.heading = (h + so + 360) % 360; S.headingT = Date.now();
+  drawDial();
+}
+async function setCompass(on) {
+  if (on) {
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const r = await DeviceOrientationEvent.requestPermission();
+        if (r !== 'granted') throw 0;
+      }
+      window.addEventListener('deviceorientationabsolute', onOrient);
+      window.addEventListener('deviceorientation', onOrient);
+      compassOn = true;
+      setTimeout(() => { if (compassOn && !S.heading) toast('No compass reading here. The arrow stays north-up.'); }, 3000);
+    } catch { $('compass').checked = false; compassOn = false; toast('Compass access was not allowed. The arrow stays north-up.'); }
+  } else {
+    window.removeEventListener('deviceorientationabsolute', onOrient);
+    window.removeEventListener('deviceorientation', onOrient);
+    compassOn = false; S.heading = null;
+  }
+  drawDial();
+}
+function currentHeading() {
+  if (compassOn && S.heading != null && Date.now() - S.headingT < 3000) return { h: S.heading, src: 'compass' };
+  if (S.fix && S.fix.speed > 0.8 && S.fix.course != null && !isNaN(S.fix.course) && fixAge() < 5) return { h: S.fix.course, src: 'course' };
+  return null;
+}
+
+/* ---------- wake lock ---------- */
+let wakeLock = null;
+async function setWake(on) {
+  try {
+    if (on) { if (!('wakeLock' in navigator)) throw 0; wakeLock = await navigator.wakeLock.request('screen'); }
+    else if (wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch { if (on) { toast('This browser cannot keep the screen on.'); $('wake').checked = false; S.set.wake = false; saveSet(); } }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.set.wake) setWake(true); });
+
+/* ---------- target helpers ---------- */
+const targetPt = () => S.points.find(p => p.id === S.target) || null;
+function setTarget(id) { S.target = id; store.set('target', id); S.zoom = 1; renderAll(); }
+function myGrid(zone) {
+  if (!S.fix) return null;
+  return GEO.wgsToGrid(S.fix.lat, S.fix.lon, S.set.datum, zone, S.set.width);
+}
+
+/* ---------- rendering ---------- */
+function renderStatus() {
+  const s = fixState(), fs = $('fixstate'); fs.dataset.s = s;
+  const a = fixAge();
+  $('fixtext').textContent = s === 'live' ? 'Live GPS fix' : s === 'stale' ? `No update for ${Math.round(a)} s`
+    : s === 'lost' ? (S.fix ? `Signal lost ${a < 120 ? Math.round(a) + ' s' : Math.round(a / 60) + ' min'} ago` : S.errCode === 1 ? 'Location blocked' : 'No GPS position') : 'Waiting for GPS';
+  const ea = effAcc();
+  $('acc').innerHTML = ea == null ? '' : `±<b>${ea < 100 ? ea.toFixed(1) : Math.round(ea)}</b> m`;
+}
+function renderTarget() {
+  const box = $('target'), t = targetPt();
+  box.classList.remove('arrived');
+  if (!t) $('tnav').hidden = true;
+  if (!S.points.length) {
+    setHTML($('tbody'), `<div class="empty"><strong>No points loaded</strong><p>Import a CSV or TXT file with point ID, easting and northing to start staking out.</p><button class="btn primary" data-go="pts">Import points</button></div>`);
+    return;
+  }
+  if (!t) {
+    setHTML($('tbody'), `<div class="empty"><strong>Pick a point to stake out</strong><p>${S.points.length} points loaded.</p><button class="btn primary" data-go="pts">Choose point</button></div>`);
+    return;
+  }
+  const d = S.set.datum, D = GEO.DATUMS[d];
+  let head = `<div class="t-head"><div class="t-id">${esc(t.id)}</div><div class="t-meta">${esc([t.code, t.H != null ? 'H ' + t.H.toFixed(2) : ''].filter(Boolean).join(', '))}</div></div>`;
+  let body, warn = '';
+  if (!S.fix) {
+    body = `<div class="t-body"><svg class="dial" id="dial" viewBox="-80 -80 160 160"></svg><div><div class="dist">—</div><div class="deltas"><div><span>${S.errCode === 1 ? 'Location blocked. See below.' : 'Waiting for your position'}</span></div></div></div></div>`;
+  } else {
+    const g = myGrid(D.gk ? t.zone : undefined);
+    const dE = t.E - g.E, dN = t.N - g.N, dist = Math.hypot(dE, dN);
+    const [dv, du] = distParts(dist);
+    const ea = effAcc();
+    if (dist <= Math.max(ea, 0.5) && fixState() === 'live') box.classList.add('arrived');
+    body = `<div class="t-body"><svg class="dial" id="dial" viewBox="-80 -80 160 160" role="img" aria-label="Direction to point"></svg>
+      <div><div class="dist">${dv}<small>${du}</small></div>
+      <div class="deltas"><div>${fmtDist(Math.abs(dN))} <span>${dN >= 0 ? 'north' : 'south'}</span></div><div>${fmtDist(Math.abs(dE))} <span>${dE >= 0 ? 'east' : 'west'}</span></div></div></div></div>`;
+    const s = fixState();
+    if (s !== 'live') warn = `<p class="t-warn ${s === 'lost' ? 'lost' : ''}">Position is ${Math.round(fixAge())} s old and could be off by ±${Math.round(ea)} m. Distances are frozen until GPS returns.</p>`;
+    else if (box.classList.contains('arrived')) warn = `<p class="t-warn" style="background:color-mix(in srgb,var(--live) 14%,var(--surface))">You're within GPS accuracy of this point (±${S.fix.acc.toFixed(1)} m).</p>`;
+  }
+  const i = t.i;
+  setHTML($('tbody'), head + body + warn);
+  $('tprev').disabled = i <= 0; $('tnext').disabled = i >= S.points.length - 1; $('tnav').hidden = false;
+  drawDial();
+}
+function drawDial() {
+  const svg = $('dial'); if (!svg) return;
+  const t = targetPt(), hd = currentHeading();
+  const rot = hd ? -hd.h : 0;
+  let arrow = '';
+  if (t && S.fix) {
+    const g = myGrid(GEO.DATUMS[S.set.datum].gk ? t.zone : undefined);
+    const dist = Math.hypot(t.E - g.E, t.N - g.N);
+    if (dist <= Math.max(effAcc(), 0.5) && fixState() === 'live') {
+      arrow = `<circle r="30" fill="none" stroke="var(--live)" stroke-width="6"/><circle r="12" fill="var(--live)"/>`;
+    } else {
+      const b = bearing(S.fix, t);
+      const stale = fixState() !== 'live';
+      arrow = `<g transform="rotate(${b + rot})" opacity="${stale ? 0.45 : 1}"><path d="M0 -58 L20 6 L0 -4 L-20 6 Z" fill="var(--flag)"/><line x1="0" y1="-4" x2="0" y2="40" stroke="var(--flag)" stroke-width="6" stroke-linecap="round"/></g>`;
+    }
+  }
+  let ticks = '';
+  for (let a = 0; a < 360; a += 30) ticks += `<line transform="rotate(${a})" x1="0" y1="-74" x2="0" y2="${a % 90 ? -68 : -64}" stroke="var(--muted)" stroke-width="${a % 90 ? 1.5 : 2.5}"/>`;
+  svg.innerHTML = `<circle r="74" fill="var(--bg)" stroke="var(--line)" stroke-width="2"/>
+    <g transform="rotate(${rot})">${ticks}<text x="0" y="-47" text-anchor="middle" font-size="17" font-weight="700" fill="var(--ink)" font-family="var(--font-c)">N</text></g>
+    ${arrow}<circle r="4" fill="var(--ink)"/>
+    <text x="0" y="72" dy="-8" text-anchor="middle" font-size="11" fill="var(--muted)" font-family="var(--font-c)">${hd ? (hd.src === 'compass' ? 'compass' : 'walking direction') : 'north up'}</text>`;
+}
+function renderMe() {
+  const dl = $('mecoords'), D = GEO.DATUMS[S.set.datum];
+  if (!S.fix) {
+    $('mehead').textContent = 'Your position';
+    setHTML(dl, `<dd style="grid-column:1/-1;font-size:16px;font-weight:500;text-align:left">${esc(S.lastErr || 'Waiting for the first GPS fix. Open sky helps.')}</dd>`
+      + (S.errCode ? `<dd style="grid-column:1/-1;text-align:left;margin-top:10px"><button class="btn primary" data-retry>Try again</button></dd>` : ''));
+    return;
+  }
+  const t = targetPt();
+  const g = myGrid(D.gk && t ? t.zone : undefined);
+  $('mehead').textContent = `Your position in ${D.short}${D.gk ? ' zone ' + g.zone : ''}`;
+  let h = `<dt>Easting</dt><dd>${f3(g.E)}</dd><dt>Northing</dt><dd>${f3(g.N)}</dd>`;
+  h += `<dt>WGS84</dt><dd style="font-size:16px">${S.fix.lat.toFixed(7)}, ${S.fix.lon.toFixed(7)}</dd>`;
+  if (S.fix.alt != null) h += `<dt>GPS height</dt><dd style="font-size:16px">${S.fix.alt.toFixed(1)} m${S.fix.altAcc ? ' ±' + Math.round(S.fix.altAcc) : ''}</dd>`;
+  dl.innerHTML = h;
+}
+function renderList() {
+  const ul = $('plist'), q = $('filter').value.trim().toLowerCase();
+  const sum = $('summary');
+  if (!S.points.length) {
+    $('listblock').hidden = true;
+    sum.className = 'summary';
+    sum.innerHTML = S.raw ? `No coordinates found in ${esc(S.fileName || 'the text')}. Each line needs an ID followed by easting and northing.`
+      : `One point per line: ID, easting, northing, then optional height and code. Spaces, tabs, commas or semicolons all work. Example: <code>1001 5411893.62 5658167.51 112.40 corner</code>`;
+    return;
+  }
+  $('listblock').hidden = false;
+  const D = GEO.DATUMS[S.set.datum];
+  let msg = `${S.points.length} points from ${esc(S.fileName || 'pasted text')} in ${esc(D.short)}.`;
+  if (S.skipped) msg += ` ${S.skipped} lines skipped (no coordinate pair).`;
+  sum.className = 'summary';
+  if (S.outside) { msg += ` ${S.outside} points land outside Germany. Check the coordinate system and column order in Setup.`; sum.className = 'summary warn'; }
+  sum.innerHTML = msg;
+  let pts = S.points;
+  if (q) pts = pts.filter(p => p.id.toLowerCase().includes(q) || p.code.toLowerCase().includes(q));
+  const withD = pts.map(p => ({ p, d: S.fix ? haversine(S.fix, p) : null }));
+  if (S.fix) withD.sort((a, b) => a.d - b.d);
+  const MAX = 300;
+  S._listAt = S.fix ? { lat: S.fix.lat, lon: S.fix.lon } : null;
+  setHTML(ul, withD.slice(0, MAX).map(({ p, d }) =>
+    `<li class="${p.id === S.target ? 'on' : ''}"><button data-id="${esc(p.id)}"><span class="pid">${esc(p.id)}</span><span class="pd">${d == null ? '' : fmtDist(d)}</span><span class="pc">${esc([p.code, p.H != null ? 'H ' + p.H.toFixed(2) : '', `${p.E.toFixed(2)} / ${p.N.toFixed(2)}`].filter(Boolean).join(', '))}</span></button></li>`).join('')
+    + (withD.length > MAX ? `<li class="more">Showing the ${MAX} ${S.fix ? 'nearest' : 'first'} of ${withD.length}. Search to narrow down.</li>` : '')
+    + (!withD.length ? `<li class="more">No point matches “${esc(q)}”.</li>` : ''));
+}
+function renderSetup() {
+  const sel = $('datum');
+  if (!sel.options.length) sel.innerHTML = Object.entries(GEO.DATUMS).map(([k, d]) => `<option value="${k}">${esc(d.label)}</option>`).join('');
+  sel.value = S.set.datum;
+  const D = GEO.DATUMS[S.set.datum];
+  $('widthbox').hidden = !D.gk || S.set.datum !== 's4283';
+  document.querySelectorAll('[data-w]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.w === S.set.width)));
+  document.querySelectorAll('[data-o]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.o === S.set.order)));
+  $('datumnote').textContent = D.gk
+    ? `Zone is read from the first digit of each easting (4xxxxxx = zone 4). Datum shift accuracy ${D.acc}, well below phone GPS error.`
+    : 'Eastings with the zone prefix (e.g. 33412345.67) are accepted.';
+  $('wake').checked = !!S.set.wake; $('rec').checked = !!S.rec; $('compass').checked = compassOn;
+  $('trackinfo').textContent = S.track.length ? `${S.track.length} positions stored` : 'Saves your path on this phone';
+  $('exlog').textContent = `Logged positions (${S.logged.length})`;
+  $('extrack').textContent = `Track (${S.track.length})`;
+}
+
+/* ---------- plot ---------- */
+function drawPlot() {
+  const cv = $('plot'); if (S.tab !== 'nav') return;
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (W < 60 || H < 60) return;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = getComputedStyle(document.documentElement), C = n => css.getPropertyValue(n).trim();
+  ctx.clearRect(0, 0, W, H);
+  const t = targetPt();
+  const origin = S.fix || t || S.points[0];
+  if (!origin) { ctx.fillStyle = C('--muted'); ctx.font = `15px ${C('--font')}`; ctx.fillText('Your position and points appear here.', 16, H / 2); $('scale').textContent = ''; return; }
+  let reach = 10;
+  if (S.fix && t) reach = Math.max(reach, haversine(S.fix, t) * 1.2);
+  if (S.fix) reach = Math.max(reach, effAcc() * 1.3);
+  reach /= S.zoom;
+  const ppm = (Math.min(W, H) / 2 - 18) / reach;
+  const cx = W / 2, cy = H / 2;
+  const P = p => { const e = enu(origin, p); return [cx + e.x * ppm, cy - e.y * ppm]; };
+  // range rings at a round step
+  const steps = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+  const step = steps.find(s => s * ppm > 45) || 50000;
+  ctx.strokeStyle = C('--line'); ctx.lineWidth = 1;
+  for (let r = step; r * ppm < Math.hypot(W, H) / 2; r += step) { ctx.beginPath(); ctx.arc(cx, cy, r * ppm, 0, 7); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+  ctx.fillStyle = C('--muted'); ctx.font = `600 13px ${C('--font-c')}`; ctx.fillText('N', cx + 5, 14);
+  $('scale').textContent = `Rings every ${step >= 1000 ? step / 1000 + ' km' : step + ' m'}`;
+  // track
+  if (S.track.length > 1) {
+    ctx.strokeStyle = C('--me'); ctx.globalAlpha = .45; ctx.lineWidth = 2; ctx.beginPath();
+    S.track.slice(-3000).forEach((p, i) => { const [x, y] = P(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  // points
+  ctx.font = `600 13px ${C('--font-c')}`;
+  let drawn = 0;
+  for (const p of S.points) {
+    const [x, y] = P(p);
+    if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
+    if (++drawn > 600) break;
+    if (p.id === S.target) continue;
+    ctx.strokeStyle = C('--ink'); ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(x - 5, y - 5); ctx.lineTo(x + 5, y + 5); ctx.moveTo(x + 5, y - 5); ctx.lineTo(x - 5, y + 5); ctx.stroke();
+    if (drawn < 60) { ctx.fillStyle = C('--muted'); ctx.fillText(p.id, x + 7, y - 6); }
+  }
+  // logged positions
+  ctx.fillStyle = C('--live');
+  for (const l of S.logged) { const [x, y] = P(l); ctx.fillRect(x - 3, y - 3, 6, 6); }
+  // target
+  if (t) {
+    const [x, y] = P(t);
+    if (S.fix) { const [mx, my] = P(S.fix); ctx.setLineDash([6, 5]); ctx.strokeStyle = C('--flag'); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(x, y); ctx.stroke(); ctx.setLineDash([]); }
+    ctx.fillStyle = C('--flag'); ctx.beginPath(); ctx.arc(x, y, 8, 0, 7); ctx.fill();
+    ctx.strokeStyle = C('--surface'); ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = C('--flag'); ctx.font = `700 15px ${C('--font-c')}`; ctx.fillText(t.id, x + 11, y - 9);
+  }
+  // me
+  if (S.fix) {
+    const [x, y] = P(S.fix), me = C('--me'), live = fixState() === 'live';
+    ctx.fillStyle = me; ctx.globalAlpha = .13; ctx.beginPath(); ctx.arc(x, y, Math.max(6, effAcc() * ppm), 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+    if (!live) { ctx.setLineDash([4, 4]); ctx.strokeStyle = me; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, Math.max(6, effAcc() * ppm), 0, 7); ctx.stroke(); ctx.setLineDash([]); }
+    ctx.fillStyle = live ? me : C('--muted'); ctx.beginPath(); ctx.arc(x, y, 7, 0, 7); ctx.fill();
+    ctx.strokeStyle = C('--surface'); ctx.lineWidth = 2.5; ctx.stroke();
+  }
+}
+
+/* ---------- log position ---------- */
+function startLog() {
+  if (!S.fix || fixState() !== 'live') { toast('Needs a live GPS fix.'); return; }
+  if (S.logging) return;
+  const btn = $('logbtn');
+  S.logging = { samples: [{ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc }], t0: Date.now() };
+  btn.disabled = true;
+  const tick = () => {
+    const left = 5 - Math.floor((Date.now() - S.logging.t0) / 1000);
+    if (left > 0) { btn.textContent = `Averaging… ${left} s`; setTimeout(tick, 250); return; }
+    const sm = S.logging.samples; S.logging = null;
+    const lat = sm.reduce((a, s) => a + s.lat, 0) / sm.length, lon = sm.reduce((a, s) => a + s.lon, 0) / sm.length;
+    const acc = sm.reduce((a, s) => a + s.acc, 0) / sm.length;
+    const spread = Math.max(...sm.map(s => haversine({ lat, lon }, s)));
+    const id = 'L' + String(S.logged.length + 1).padStart(3, '0');
+    S.logged.push({ id, lat, lon, acc: +acc.toFixed(2), n: sm.length, spread: +spread.toFixed(2), t: Date.now(), near: S.target || '' });
+    store.set('logged', S.logged);
+    btn.disabled = false; btn.textContent = 'Log position (5 s average)';
+    $('lognote').textContent = `${id} saved from ${sm.length} fixes, spread ${spread.toFixed(2)} m, GPS accuracy ±${acc.toFixed(1)} m.`;
+    renderSetup(); drawPlot();
+  };
+  tick();
+}
+
+/* ---------- export ---------- */
+let dl = null;
+if (window.claude && typeof window.claude.use === 'function') window.claude.use('downloads').then(d => { dl = d; }).catch(() => { });
+function csvRows(rows) {
+  const D = GEO.DATUMS[S.set.datum];
+  const t = targetPt(), zone = D.gk ? (t ? t.zone : undefined) : undefined;
+  return rows.map(r => { const g = GEO.wgsToGrid(r.lat, r.lon, S.set.datum, zone, S.set.width); return { r, g }; });
+}
+function iso(t) { return new Date(t).toISOString(); }
+async function exportText(name, text) {
+  if (dl) {
+    try { await dl.save({ filename: name, data: text }); toast('Saved ' + name); return; }
+    catch (e) { if (e && e.code === 'declined') return; if (e && e.code === 'rate_limited') { toast('A save prompt is already open.'); return; } }
+  }
+  if (!FRAMED) { // self-hosted: plain browser download
+    try {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' })); a.download = name;
+      document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); toast('Saved ' + name); return;
+    } catch { }
+  }
+  $('copytext').value = text; $('copydlg').showModal();
+}
+$('exlog').onclick = () => {
+  if (!S.logged.length) { toast('No logged positions yet. Use Log position on the Stake out tab.'); return; }
+  const D = GEO.DATUMS[S.set.datum];
+  const lines = ['id;easting;northing;zone;system;lat_wgs84;lon_wgs84;gps_acc_m;fixes;spread_m;near_point;time_utc'];
+  for (const { r, g } of csvRows(S.logged)) lines.push([r.id, f3(g.E), f3(g.N), g.zone, D.short, r.lat.toFixed(8), r.lon.toFixed(8), r.acc, r.n, r.spread, r.near, iso(r.t)].join(';'));
+  exportText('logged-positions.csv', lines.join('\n'));
+};
+$('extrack').onclick = () => {
+  if (!S.track.length) { toast('No track recorded yet. Turn on Record track.'); return; }
+  const D = GEO.DATUMS[S.set.datum];
+  const lines = ['time_utc;easting;northing;zone;system;lat_wgs84;lon_wgs84;gps_acc_m'];
+  for (const { r, g } of csvRows(S.track)) lines.push([iso(r.t), f3(g.E), f3(g.N), g.zone, D.short, r.lat.toFixed(8), r.lon.toFixed(8), r.acc].join(';'));
+  exportText('track.csv', lines.join('\n'));
+};
+$('copybtn').onclick = async () => {
+  const ta = $('copytext');
+  try { await navigator.clipboard.writeText(ta.value); toast('Copied'); }
+  catch { ta.focus(); ta.select(); toast('Select all and copy manually.'); }
+};
+$('copyclose').onclick = () => $('copydlg').close();
+
+/* ---------- events ---------- */
+function showTab(tab) {
+  S.tab = tab;
+  for (const k of ['nav', 'pts', 'set']) $('tab-' + k).hidden = k !== tab;
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+  window.scrollTo(0, 0);
+  renderAll();
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-retry]')) { retryGPS(); return; }
+  const go = e.target.closest('[data-go]'); if (go) { showTab(go.dataset.go); return; }
+  const st = e.target.closest('[data-step]');
+  if (st && !targetPt()) return;
+  if (st) { const t = targetPt(); const n = S.points[t.i + +st.dataset.step]; if (n) setTarget(n.id); return; }
+  const pb = e.target.closest('.plist button');
+  if (pb) { setTarget(pb.dataset.id); showTab('nav'); }
+});
+$('file').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { loadRaw(String(r.result), f.name); e.target.value = ''; };
+  r.onerror = () => toast('Could not read that file.');
+  r.readAsText(f);
+};
+$('pastebtn').onclick = () => { const b = $('pastebox'); b.hidden = !b.hidden; if (!b.hidden) $('pastetext').focus(); };
+$('pasteok').onclick = () => { const v = $('pastetext').value; if (!v.trim()) { toast('Paste some coordinates first.'); return; } loadRaw(v, 'pasted text'); $('pastebox').hidden = true; };
+$('filter').oninput = renderList;
+$('datum').onchange = e => { S.set.datum = e.target.value; if (S.set.datum === 's4283') S.set.width = 6; else S.set.width = 3; saveSet(); if (S.raw) loadRaw(S.raw, S.fileName); else renderAll(); };
+document.querySelectorAll('[data-w]').forEach(b => b.onclick = () => { S.set.width = +b.dataset.w; saveSet(); if (S.raw) loadRaw(S.raw, S.fileName); else renderAll(); });
+document.querySelectorAll('[data-o]').forEach(b => b.onclick = () => { S.set.order = b.dataset.o; saveSet(); if (S.raw) loadRaw(S.raw, S.fileName); else renderAll(); });
+$('wake').onchange = e => { S.set.wake = e.target.checked; saveSet(); setWake(S.set.wake); };
+$('compass').onchange = e => setCompass(e.target.checked);
+$('rec').onchange = e => { S.rec = e.target.checked; store.set('rec', S.rec); if (!S.rec) store.set('track', S.track); renderSetup(); };
+$('clrpts').onclick = () => { if (!confirm('Remove the imported points from this phone?')) return; S.raw = ''; S.points = []; S.target = null; store.set('raw', ''); store.set('target', null); renderAll(); };
+$('clrlog').onclick = () => { if (!confirm('Delete logged positions and the recorded track?')) return; S.logged = []; S.track = []; store.set('logged', []); store.set('track', []); renderAll(); };
+$('logbtn').onclick = startLog;
+$('zin').onclick = () => { S.zoom *= 2; drawPlot(); };
+$('zout').onclick = () => { S.zoom /= 2; drawPlot(); };
+$('zfit').onclick = () => { S.zoom = 1; drawPlot(); };
+window.addEventListener('resize', drawPlot);
+window.addEventListener('pagehide', () => store.set('track', S.track));
+
+let pending = false;
+function renderLive() {
+  if (pending) return; pending = true;
+  requestAnimationFrame(() => { pending = false; renderStatus(); if (S.tab === 'nav') { renderTarget(); renderMe(); drawPlot(); } else if (S.tab === 'pts' && S.fix && (!S._listAt || haversine(S._listAt, S.fix) > 3)) renderList(); });
+}
+function renderAll() { renderStatus(); renderTarget(); renderMe(); renderList(); renderSetup(); drawPlot(); }
+setInterval(renderLive, 1000);
+
+/* ---------- boot ---------- */
+if (S.raw) { const r = parsePoints(S.raw); S.points = r.points; S.skipped = r.skipped; S.outside = r.outside; }
+renderAll();
+startGPS();
+if (S.set.wake) setWake(true);
+})();
+</script><script>if("serviceWorker" in navigator){navigator.serviceWorker.register("sw.js").catch(function(){})}</script></body></html>
