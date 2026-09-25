@@ -151,6 +151,8 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
 
 .fixstate[data-s="dr"] .dot{background:var(--me);box-shadow:0 0 0 4px color-mix(in srgb,var(--me) 22%,transparent)}
 .fixstate[data-s="dr"]{color:var(--me)}
+
+.seg.rng{grid-template-columns:repeat(4,1fr)}
 </style></head><body>
 <header class="status">
   <div class="wrap">
@@ -192,6 +194,10 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
     </div>
     <div class="block" id="listblock">
       <input class="search" id="filter" type="search" placeholder="Find point by ID or code" autocomplete="off">
+      <div class="seg rng" style="margin-top:10px"><button data-rng="25">25 m</button><button data-rng="50">50 m</button><button data-rng="100">100 m</button><button data-rng="all">All</button></div>
+      <div class="row lvlrow" style="margin-top:10px"><div class="seg" style="flex:1"><button data-lvl="mine">My level</button><button data-lvl="all">All heights</button></div><button class="btn" data-lvl="change" style="flex:0 0 auto;min-height:46px">Change</button></div>
+      <p class="note" id="lvlinfo" style="margin:8px 0 0"></p>
+      <p class="note" id="listinfo" style="margin:8px 0 0"></p>
       <ul class="plist" id="plist"></ul>
     </div>
   </section>
@@ -708,6 +714,17 @@ async function setWake(on) {
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.set.wake) setWake(true); });
 
+/* ---------- level (height) filter ---------- */
+const LEVEL_TOL = 3;
+const levelOn = () => S.set.levelMode !== 'all' && S.set.myH != null;
+const offLevel = p => levelOn() && p.H != null && Math.abs(p.H - S.set.myH) > LEVEL_TOL;
+function setMyLevel(pt) {
+  if (!pt || pt.H == null) return;
+  S.set.myH = pt.H; S.set.myHsrc = pt.id;
+  if (S.set.levelMode == null) S.set.levelMode = 'mine';
+  saveSet();
+}
+
 /* ---------- indoor tracking: steps + gyro, anchored at known points (no GPS) ---------- */
 S.set.stepLen = +S.set.stepLen || 0.72;
 S.dr = null;
@@ -765,6 +782,7 @@ function stopTracking() {
   renderAll();
 }
 async function beginTracking(t, h0) {
+  setMyLevel(t);
   S.dr = { E: t.E, N: t.N, zone: t.zone, heading: h0, hRef: h0, yRef: yawNow, steps: 0, anchorId: t.id,
     seg: { E0: t.E, N0: t.N, steps: 0, dist: 0 }, path: [[t.E, t.N]] };
   if (!(await startDrSensors())) { S.dr = null; }
@@ -772,6 +790,7 @@ async function beginTracking(t, h0) {
   if (S.dr) toast(`Tracking from ${t.id}. Walk with the phone held in front of you.`);
 }
 function reanchor(t) {
+  setMyLevel(t);
   const dr = S.dr, sg = dr.seg;
   let msg = `Re-anchored at ${t.id}.`;
   const dT = [t.E - sg.E0, t.N - sg.N0], dK = [dr.E - sg.E0, dr.N - sg.N0];
@@ -964,16 +983,37 @@ function renderList() {
   if (D.local && !LT) { msg += ` The local grid isn't linked to a known system yet, so distances can't be shown. Set it up in Setup.`; sum.className = 'summary warn'; }
   if (S.outside) { msg += ` ${S.outside} points land outside Germany. Check the coordinate system and column order in Setup.`; sum.className = 'summary warn'; }
   sum.innerHTML = msg;
-  let pts = S.points;
-  if (q) pts = pts.filter(p => p.id.toLowerCase().includes(q) || p.code.toLowerCase().includes(q));
-  const withD = pts.map(p => ({ p, d: S.dr ? Math.hypot(p.E - S.dr.E, p.N - S.dr.N) : S.fix && p.lat != null ? haversine(S.fix, p) : null }));
-  if (S.fix && withD.every(w => w.d != null)) withD.sort((a, b) => a.d - b.d);
+  const rng = S.set.listRange || 50;
+  document.querySelectorAll('[data-rng]').forEach(b => b.setAttribute('aria-pressed', String(String(rng) === b.dataset.rng)));
+  const distOf = p => S.dr ? Math.hypot(p.E - S.dr.E, p.N - S.dr.N) : S.fix && p.lat != null ? haversine(S.fix, p) : null;
+  const havePos = !!(S.dr || (S.fix && (!isLocal() || LT)));
+  let withD = S.points.map(p => ({ p, d: distOf(p) }));
+  let info;
+  if (q) {
+    withD = withD.filter(({ p }) => p.id.toLowerCase().includes(q) || p.code.toLowerCase().includes(q));
+    info = `Searching all ${S.points.length} points: ${withD.length} match${withD.length === 1 ? '' : 'es'}.`;
+  } else {
+    const lvl = levelOn();
+    if (lvl) withD = withD.filter(w => !offLevel(w.p));
+    const onLvl = lvl ? ' on your level' : '';
+    if (rng !== 'all' && havePos) {
+      withD = withD.filter(w => w.d != null && w.d <= rng);
+      info = `${withD.length} point${withD.length === 1 ? '' : 's'} within ${rng} m${onLvl}.`;
+    } else info = rng !== 'all' && !havePos ? `Showing all points${onLvl} until your position is known.` : `Showing ${withD.length} point${withD.length === 1 ? '' : 's'}${onLvl}.`;
+  }
+  const lm = S.set.levelMode || 'all';
+  document.querySelectorAll('[data-lvl]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lvl === (lm === 'all' ? 'all' : 'mine'))));
+  $('lvlinfo').textContent = lm === 'all' ? 'Points on all floors are shown.'
+    : S.set.myH == null ? 'Your level is not known yet. Start indoor tracking at a point, or set it with "Change".'
+    : `Your level: H ${S.set.myH.toFixed(2)}${S.set.myHsrc ? ' (from ' + S.set.myHsrc + ')' : ''}. Showing points within ±${LEVEL_TOL} m of it.`;
+  $('listinfo').textContent = info;
+  if (havePos) withD.sort((a, b) => (a.d ?? Infinity) - (b.d ?? Infinity));
   const MAX = 300;
-  S._listAt = S.fix ? { lat: S.fix.lat, lon: S.fix.lon } : null;
+  S._listAt = S.dr ? { E: S.dr.E, N: S.dr.N } : S.fix ? { lat: S.fix.lat, lon: S.fix.lon } : null;
   setHTML(ul, withD.slice(0, MAX).map(({ p, d }) =>
     `<li class="${p.id === S.target ? 'on' : ''}"><button data-id="${esc(p.id)}"><span class="pid">${esc(p.id)}</span><span class="pd">${d == null ? '' : fmtDist(d)}</span><span class="pc">${esc([p.code, p.H != null ? 'H ' + p.H.toFixed(2) : '', `${p.E.toFixed(2)} / ${p.N.toFixed(2)}`].filter(Boolean).join(', '))}</span></button></li>`).join('')
     + (withD.length > MAX ? `<li class="more">Showing the ${MAX} ${S.fix ? 'nearest' : 'first'} of ${withD.length}. Search to narrow down.</li>` : '')
-    + (!withD.length ? `<li class="more">No point matches “${esc(q)}”.</li>` : ''));
+    + (!withD.length ? (q ? `<li class="more">No point matches “${esc(q)}”.</li>` : `<li class="more">No points within ${rng} m${levelOn() ? ' on your level' : ''}. <button class="btn" data-rng="all" style="margin-top:8px;min-height:40px">Show all points</button></li>`) : ''));
 }
 function renderSetup() {
   const sel = $('datum');
@@ -1087,6 +1127,7 @@ function startCal() {
     const lat = sm.reduce((a, v) => a + v.lat, 0) / sm.length, lon = sm.reduce((a, v) => a + v.lon, 0) / sm.length;
     const L = S.set.local;
     const r = GEO.wgsToGrid(lat, lon, L.ref, LT ? LT.zone : undefined, L.width);
+    setMyLevel(pt);
     const id = String(pt.id).replace(/\s+/g, '_');
     const loc = S.set.order === 'NE' ? `${pt.N.toFixed(3)} ${pt.E.toFixed(3)}` : `${pt.E.toFixed(3)} ${pt.N.toFixed(3)}`;
     L.pts = ((L.pts || '').trim() ? L.pts.trim() + '\n' : '') + `${id} ${loc} ${r.E.toFixed(3)} ${r.N.toFixed(3)}`;
@@ -1121,8 +1162,10 @@ function drawPlotGrid(ctx, W, H, C) {
     const [x, y] = P(p.E, p.N);
     if (x < -20 || y < -20 || x > W + 20 || y > H + 20 || p.id === S.target) continue;
     if (++drawn > 600) break;
+    const off = offLevel(p); ctx.globalAlpha = off ? 0.18 : 1;
     ctx.strokeStyle = C('--ink'); ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(x - 5, y - 5); ctx.lineTo(x + 5, y + 5); ctx.moveTo(x + 5, y - 5); ctx.lineTo(x - 5, y + 5); ctx.stroke();
-    if (drawn < 60) { ctx.fillStyle = C('--muted'); ctx.font = `600 13px ${C('--font-c')}`; ctx.fillText(p.id, x + 7, y - 6); }
+    ctx.globalAlpha = 1;
+    if (!off && drawn < 60) { ctx.fillStyle = C('--muted'); ctx.font = `600 13px ${C('--font-c')}`; ctx.fillText(p.id, x + 7, y - 6); }
   }
   if (t) {
     const [x, y] = P(t.E, t.N);
@@ -1176,9 +1219,11 @@ function drawPlot() {
     if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
     if (++drawn > 600) break;
     if (p.id === S.target) continue;
+    const off = offLevel(p); ctx.globalAlpha = off ? 0.18 : 1;
     ctx.strokeStyle = C('--ink'); ctx.lineWidth = 1.6;
     ctx.beginPath(); ctx.moveTo(x - 5, y - 5); ctx.lineTo(x + 5, y + 5); ctx.moveTo(x + 5, y - 5); ctx.lineTo(x - 5, y + 5); ctx.stroke();
-    if (drawn < 60) { ctx.fillStyle = C('--muted'); ctx.fillText(p.id, x + 7, y - 6); }
+    ctx.globalAlpha = 1;
+    if (!off && drawn < 60) { ctx.fillStyle = C('--muted'); ctx.fillText(p.id, x + 7, y - 6); }
   }
   // logged positions
   ctx.fillStyle = C('--live');
@@ -1357,10 +1402,28 @@ $('zfit').onclick = () => { S.zoom = 1; drawPlot(); };
 window.addEventListener('resize', drawPlot);
 window.addEventListener('pagehide', () => store.set('track', S.track));
 
+function listMoved() {
+  const a = S._listAt;
+  if (S.dr) return !a || a.E == null || Math.hypot(S.dr.E - a.E, S.dr.N - a.N) > 3;
+  if (!S.fix) return false;
+  return !a || a.lat == null || haversine(a, S.fix) > 3;
+}
+document.addEventListener('click', e => {
+  const lv = e.target.closest('[data-lvl]');
+  if (lv) {
+    if (lv.dataset.lvl === 'change') {
+      const v = pnum(prompt(`Your height in metres, e.g. the H value of a point on your floor. Points within ±${LEVEL_TOL} m are shown.`, S.set.myH != null ? S.set.myH.toFixed(2) : '') || '');
+      if (isFinite(v)) { S.set.myH = v; S.set.myHsrc = ''; S.set.levelMode = 'mine'; saveSet(); }
+    } else { S.set.levelMode = lv.dataset.lvl; saveSet(); }
+    renderList(); drawPlot(); return;
+  }
+  const b = e.target.closest('[data-rng]'); if (!b) return;
+  S.set.listRange = b.dataset.rng === 'all' ? 'all' : +b.dataset.rng; saveSet(); renderList();
+});
 let pending = false;
 function renderLive() {
   if (pending) return; pending = true;
-  requestAnimationFrame(() => { pending = false; renderStatus(); if (S.tab === 'nav') { renderTarget(); renderMe(); drawPlot(); } else if (S.tab === 'pts' && !S.dr && S.fix && (!S._listAt || haversine(S._listAt, S.fix) > 3)) renderList(); });
+  requestAnimationFrame(() => { pending = false; renderStatus(); if (S.tab === 'nav') { renderTarget(); renderMe(); drawPlot(); } else if (S.tab === 'pts' && listMoved()) renderList(); });
 }
 function renderAll() { renderStatus(); renderTarget(); renderMe(); renderList(); renderSetup(); drawPlot(); }
 setInterval(renderLive, 1000);
