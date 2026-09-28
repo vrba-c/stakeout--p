@@ -1591,9 +1591,12 @@ function drawPlotGrid(ctx, W, H, C) {
   if (me.autos && me.autos.length) { ctx.strokeStyle = C('--live'); ctx.lineWidth = 2; for (const [E, N] of me.autos) { const [x, y] = P(E, N); ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.stroke(); } }
   if (me.path.length > 1) { ctx.strokeStyle = C('--me'); ctx.globalAlpha = .5; ctx.lineWidth = 2; ctx.beginPath(); me.path.forEach(([E, N], i) => { const [x, y] = P(E, N); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke(); ctx.globalAlpha = 1; }
   let drawn = 0;
+  const hits = S._hits = [];
   for (const p of S.points) {
     const [x, y] = P(p.E, p.N);
-    if (x < -20 || y < -20 || x > W + 20 || y > H + 20 || p.id === S.target) continue;
+    if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
+    hits.push({ id: p.id, x, y });
+    if (p.id === S.target) continue;
     if (++drawn > 600) break;
     const off = offLevel(p); ctx.globalAlpha = off ? 0.18 : 1;
     ctx.strokeStyle = C('--ink'); ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(x - 5, y - 5); ctx.lineTo(x + 5, y + 5); ctx.moveTo(x + 5, y - 5); ctx.lineTo(x - 5, y + 5); ctx.stroke();
@@ -1618,7 +1621,7 @@ function drawPlot() {
   if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
   const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const css = getComputedStyle(document.documentElement), C = n => css.getPropertyValue(n).trim();
-  ctx.clearRect(0, 0, W, H);
+  ctx.clearRect(0, 0, W, H); S._hits = [];
   if (S.view && S.view.kind !== (S.dr ? 'dr' : 'gps')) S.view = null; // switched between GPS and indoor tracking: follow again
   $('zme').hidden = !S.view;
   if (S.dr) return drawPlotGrid(ctx, W, H, C);
@@ -1652,11 +1655,13 @@ function drawPlot() {
   // points
   ctx.font = `600 13px ${C('--font-c')}`;
   let drawn = 0;
+  const hits = S._hits = [];
   for (const p of S.points) {
     if (p.lat == null) continue;
     const [x, y] = P(p);
     if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
     if (++drawn > 600) break;
+    hits.push({ id: p.id, x, y });
     if (p.id === S.target) continue;
     const off = offLevel(p); ctx.globalAlpha = off ? 0.18 : 1;
     ctx.strokeStyle = C('--ink'); ctx.lineWidth = 1.6;
@@ -2008,7 +2013,7 @@ $('zout').onclick = () => { S.zoom /= 2; drawPlot(); };
 $('zfit').onclick = () => { S.zoom = 1; S.view = null; drawPlot(); };
 $('zme').onclick = () => { S.view = null; drawPlot(); };
 (() => { // drag to move the map, pinch or wheel to zoom
-  const cv = $('plot'), ptrs = new Map(); let pinch = null, start = null, dragging = false;
+  const cv = $('plot'), ptrs = new Map(); let pinch = null, start = null, dragging = false, multi = false;
   const dist = () => { const [a, b] = [...ptrs.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
   function panBy(dx, dy) {
     const m = S._map; if (!m) return;
@@ -2021,8 +2026,8 @@ $('zme').onclick = () => { S.view = null; drawPlot(); };
   cv.addEventListener('pointerdown', e => {
     try { cv.setPointerCapture(e.pointerId); } catch { }
     ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (ptrs.size === 1) { start = { x: e.clientX, y: e.clientY }; dragging = false; }
-    if (ptrs.size === 2) pinch = { d: dist(), zoom: S.zoom };
+    if (ptrs.size === 1) { start = { x: e.clientX, y: e.clientY }; dragging = false; multi = false; }
+    if (ptrs.size === 2) { pinch = { d: dist(), zoom: S.zoom }; multi = true; }
   });
   cv.addEventListener('pointermove', e => {
     const prev = ptrs.get(e.pointerId); if (!prev) return;
@@ -2032,7 +2037,18 @@ $('zme').onclick = () => { S.view = null; drawPlot(); };
     if (!dragging && Math.hypot(cur.x - start.x, cur.y - start.y) < 6) return; // a tap, not a drag
     dragging = true; panBy(cur.x - prev.x, cur.y - prev.y);
   });
-  const end = e => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; if (ptrs.size === 1) { const [p] = ptrs.values(); start = { ...p }; } };
+  function tapAt(clientX, clientY) { // select the nearest point under the finger
+    const r = cv.getBoundingClientRect(), x = clientX - r.left, y = clientY - r.top;
+    let best = null, bd = 26; // generous touch radius in px
+    for (const h of S._hits || []) { const d = Math.hypot(h.x - x, h.y - y); if (d < bd) { bd = d; best = h; } }
+    if (!best) return;
+    if (best.id === S.target) { toast(`${best.id} is already selected.`); return; }
+    S.target = best.id; store.set('target', best.id); // keep the current zoom and map position
+    alertFx('pulse'); toast(`${best.id} selected.`); renderAll();
+  }
+  const end = e => {
+    if (e.type === 'pointerup' && ptrs.size === 1 && ptrs.has(e.pointerId) && !dragging && !multi) tapAt(e.clientX, e.clientY);
+    ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; if (ptrs.size === 1) { const [p] = ptrs.values(); start = { ...p }; } };
   cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
   cv.addEventListener('wheel', e => { e.preventDefault(); S.zoom = Math.min(500, Math.max(0.02, S.zoom * (e.deltaY < 0 ? 1.25 : 0.8))); drawPlot(); }, { passive: false });
 })();
