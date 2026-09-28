@@ -83,6 +83,8 @@ h2{font-family:var(--font-c);font-weight:600;font-size:15px;color:var(--muted);m
 .plot{position:relative;padding:0;overflow:hidden}
 canvas{display:block;width:100%;height:280px;touch-action:none}
 .zoom{position:absolute;right:10px;top:10px;display:grid;gap:6px}
+.zoom button#zme{display:grid;place-items:center;color:var(--me);border-color:var(--me)}
+.zoom button#zme[hidden]{display:none}
 .zoom button{width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:var(--surface);font-size:20px;font-weight:600;line-height:1}
 .scale{position:absolute;left:12px;bottom:10px;font-size:13px;color:var(--muted);font-family:var(--font-c)}
 
@@ -174,7 +176,7 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
     <div class="block target" id="target"><div id="tbody"></div><div class="t-nav" id="tnav" hidden><button id="tprev" data-step="-1">Previous point</button><button id="tnext" data-step="1">Next point</button></div><div class="t-cal" id="tdr" hidden></div><div class="t-cal" id="tcal" hidden><button class="btn wide" id="calbtn">Use as calibration point</button><p class="note">Stand still exactly on this point in open sky. Records a 15 s GPS average and links the local grid to it.</p></div><div class="t-cal" id="trep" hidden><button class="btn wide" id="repbtn">Report point condition</button><p class="note" id="replast"></p></div></div>
     <div class="block plot">
       <canvas id="plot" aria-label="Plan view of your position and nearby points, north up"></canvas>
-      <div class="zoom"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">−</button><button id="zfit" aria-label="Fit to target" style="font-size:14px">Fit</button></div>
+      <div class="zoom"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">−</button><button id="zfit" aria-label="Fit to target" style="font-size:14px">Fit</button><button id="zme" aria-label="Centre on my position" title="Centre on my position" hidden><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="6.5"/><circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/><path d="M12 1.5v3.5M12 19v3.5M1.5 12H5M19 12h3.5"/></svg></button></div>
       <div class="scale" id="scale"></div>
     </div>
     <div class="block">
@@ -264,6 +266,13 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
       <div class="toggle"><div>Record track<small id="trackinfo">Saves your path on this phone</small></div><input type="checkbox" class="sw" id="rec"></div>
     </div>
     <div class="block">
+      <h2>Alerts</h2>
+      <div class="toggle"><div>Vibration<small id="vibnote">Buzzes on arrival, auto-corrections and warnings.</small></div><input type="checkbox" class="sw" id="vib"></div>
+      <div class="toggle"><div>Sound<small>Beeps with the same patterns. Useful with the phone in a pocket.</small></div><input type="checkbox" class="sw" id="sound"></div>
+      <div class="toggle"><div>Pulses when getting close<small>Faster pulses as you approach, within 10 m of the point.</small></div><input type="checkbox" class="sw" id="prox"></div>
+      <div class="row" style="margin-top:6px"><button class="btn" id="fxtest">Test alerts</button></div>
+    </div>
+    <div class="block">
       <h2>GNSS receiver</h2>
       <p class="note" style="margin:0 0 10px" id="extinfo"></p>
       <div class="row"><button class="btn primary" id="extconnect">Connect receiver</button><button class="btn" id="extdisc">Disconnect</button></div>
@@ -278,6 +287,11 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
         <div class="row"><input class="inp" id="axis" inputmode="decimal" style="flex:1"><button class="btn" id="axisdetect" style="flex:0 0 auto;min-height:46px">Detect from points</button></div></div>
       <p class="note" id="axisnote"></p>
       <p class="note" id="drratenote"></p>
+      <div class="toggle" style="border-top:1px solid var(--line)"><div>Auto-correct at grid crossings<small>Experimental. When you turn 90° near a walkway on the building grid, your position snaps onto it, so you need fewer "I'm at" taps. Needs grid lines in the point file.</small></div><input type="checkbox" class="sw" id="autogrid"></div>
+      <span class="lbl" style="margin-top:6px">Walkways run</span>
+      <div class="seg" style="grid-template-columns:repeat(3,1fr)"><button data-lanes="grid">On grid lines</button><button data-lanes="mid">Between lines</button><button data-lanes="both">Both</button></div>
+      <p class="note" id="gridnote"></p>
+      <div class="toggle"><div>Show grid on the indoor map</div><input type="checkbox" class="sw" id="showgrid"></div>
     </div>
     <div class="block">
       <h2>Export</h2>
@@ -730,6 +744,7 @@ function onNmea(line) {
   }
   if (typ !== 'GGA') return;
   const q = parseInt(f[6], 10) || 0;
+  if (S.ext.q === 4 && q !== 4 && S.ext.state === 'on') alertFx('warn'); // lost RTK fixed
   S.ext.q = q; S.ext.sats = parseInt(f[7], 10) || 0; S.ext.hdop = parseFloat(f[8]); S.ext.age = f[13] ? parseFloat(f[13]) : null; S.ext.t = Date.now();
   const lat = nmeaDeg(f[2], f[3]), lon = nmeaDeg(f[4], f[5]);
   if (!q || !isFinite(lat) || !isFinite(lon)) { renderLive(); return; } // no fix: the phone's GPS takes over after 3 s
@@ -772,6 +787,7 @@ async function extGatt() {
 }
 function extOnDisconnect() {
   S.ext.state = 'off'; S.ext.ch = null; renderAll();
+  if (S.ext.want) alertFx('warn');
   if (S.ext.want) { toast(`${S.ext.name} disconnected. Reconnecting…`); S.ext.tries = 0; setTimeout(() => { if (S.ext.want && S.ext.state === 'off') extGatt(); }, 1500); }
 }
 function extUse(dev) {
@@ -819,6 +835,50 @@ function extLine() { // one-line receiver status for the Setup and position scre
   else if (x.q && x.q !== 4 && x.q !== 5) parts.push('no corrections');
   return `${x.name}: ${parts.join(', ')}.`;
 }
+
+/* ---------- vibration and sound alerts ---------- */
+const FX = { // vibration pattern (ms on/off) and matching beeps [Hz, ms, gap]
+  arrive: { v: [400], s: [[880, 400]] },
+  pulse: { v: [35], s: [[1250, 35]] },
+  snap: { v: [60, 70, 60], s: [[700, 60, 70], [700, 60]] },
+  warn: { v: [90, 70, 90, 70, 90], s: [[420, 90, 70], [420, 90, 70], [420, 90]] },
+  ok: { v: [120, 80, 260], s: [[660, 120, 80], [990, 260]] },
+};
+let audioCtx = null;
+function beep(seq) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    let t = audioCtx.currentTime + 0.01;
+    for (const [hz, ms, gap] of seq) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = hz; o.connect(g); g.connect(audioCtx.destination);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.35, t + 0.01);
+      g.gain.setValueAtTime(0.35, t + ms / 1000 - 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + ms / 1000);
+      o.start(t); o.stop(t + ms / 1000 + 0.02); t += (ms + (gap || 0)) / 1000;
+    }
+  } catch { }
+}
+const canVibrate = () => typeof navigator.vibrate === 'function';
+function alertFx(kind, force) {
+  const f = FX[kind]; if (!f || (document.visibilityState !== 'visible' && !force)) return;
+  if (S.set.vib && canVibrate()) { try { navigator.vibrate(f.v); } catch { } }
+  if (S.set.sound) beep(f.s);
+}
+// arrival and approach: edge-triggered arrival, parking-sensor pulses within 10 m
+const prox = { id: null, dist: null, thr: null, t: 0, arrivedId: null, lastPulse: 0 };
+function noteProximity(id, dist, thr, usable) {
+  prox.id = usable ? id : null; prox.dist = dist; prox.thr = thr; prox.t = Date.now();
+  if (!usable) return;
+  if (dist <= thr) { if (prox.arrivedId !== id) { prox.arrivedId = id; alertFx('arrive'); } }
+  else if (prox.arrivedId === id && dist > Math.max(2 * thr, thr + 1)) prox.arrivedId = null; // walked away: next arrival alerts again
+}
+setInterval(() => {
+  if (!S.set.prox || S.tab !== 'nav' || !prox.id || Date.now() - prox.t > 3000 || prox.arrivedId === prox.id) return;
+  const d = prox.dist; if (d == null || d > 10 || d <= prox.thr) return;
+  const every = d <= 1 ? 350 : d <= 3 ? 700 : d <= 6 ? 1300 : 2200;
+  if (Date.now() - prox.lastPulse >= every) { prox.lastPulse = Date.now(); alertFx('pulse'); }
+}, 150);
 
 /* ---------- compass ---------- */
 let compassOn = false;
@@ -888,6 +948,10 @@ S.set.snap = S.set.snap !== false;
 S.set.axis = isFinite(parseFloat(S.set.axis)) ? normAxis(parseFloat(S.set.axis)) : 0;
 S.set.drRate = +S.set.drRate || 0.06; // tracking error as a share of distance walked, learned at each "I'm at"
 S.checks = store.get('checks', []);
+S.set.autoGrid = !!S.set.autoGrid; // experimental: correct position at turns on the building grid
+if (!['grid', 'mid', 'both'].includes(S.set.lanes)) S.set.lanes = 'both'; // where walkways run relative to the grid lines
+S.set.showGrid = S.set.showGrid !== false;
+S.set.vib = S.set.vib !== false; S.set.sound = !!S.set.sound; S.set.prox = S.set.prox !== false;
 const SNAP_TOL = 12; // degrees either side of a building axis
 const fmtDeg = a => `${a.toFixed(2).replace(/\.?0+$/, '')}°`;
 function snapHeading(h) {
@@ -941,23 +1005,105 @@ function onMotion(e) {
 }
 function onStep() {
   if (!S.dr) return;
-  const dr = S.dr;
+  const dr = S.dr, L = S.set.stepLen;
   let hUse = dr.heading;
-  if (S.set.snap && !dr.cal) { // straighten the step onto the nearest building axis
-    const s = snapHeading(dr.heading);
-    if (Math.abs(s.d) <= SNAP_TOL) {
-      hUse = s.a; dr.seg.snapped++;
-      dr.run = dr.run && dr.run.k === s.k ? { k: s.k, n: dr.run.n + 1 } : { k: s.k, n: 1 };
-      if (dr.run.n >= 4) { const c = -0.1 * s.d; dr.hRef = norm360(dr.hRef + c); dr.heading = norm360(dr.heading + c); } // walking straight along an axis: pull gyro drift back
-    } else dr.run = null;
+  const s = snapHeading(dr.heading), onAxis = Math.abs(s.d) <= SNAP_TOL;
+  if (onAxis) { // follow straight runs along the building axes (for snapping and turn detection)
+    if (dr.run && dr.run.k === s.k) dr.run.n++;
+    else { if (dr.run && dr.run.n >= 4) dr.prevRun = { k: dr.run.k }; dr.run = { k: s.k, n: 1, E: dr.E, N: dr.N }; }
+    dr.off = 0;
+  } else { if (dr.run && dr.run.n >= 4) dr.prevRun = { k: dr.run.k }; dr.run = null; if (++dr.off > 6) dr.prevRun = null; }
+  if (S.set.snap && !dr.cal && onAxis) { // straighten the step onto the axis and pull gyro drift back on straight runs
+    hUse = s.a; dr.seg.snapped++;
+    if (dr.run.n >= 4) { const c = -0.1 * s.d; dr.hRef = norm360(dr.hRef + c); dr.heading = norm360(dr.heading + c); }
   }
-  const L = S.set.stepLen, h = hUse * Math.PI / 180;
-  S.dr.E += L * Math.sin(h); S.dr.N += L * Math.cos(h);
-  S.dr.steps++; S.dr.seg.steps++; S.dr.seg.dist += L;
-  S.dr.path.push([S.dr.E, S.dr.N]); if (S.dr.path.length > 3000) S.dr.path.shift();
+  const h = hUse * Math.PI / 180;
+  dr.E += L * Math.sin(h); dr.N += L * Math.cos(h);
+  dr.steps++; dr.seg.steps++; dr.seg.dist += L; dr.accDist += L;
+  dr.path.push([dr.E, dr.N]); if (dr.path.length > 3000) dr.path.shift();
+  if (dr.run && dr.run.n === 3 && dr.prevRun && Math.abs(dr.run.k - dr.prevRun.k) % 2 === 1) { // a clean 90° turn just settled
+    const turn = { kPrev: dr.prevRun.k, kNew: dr.run.k, E: dr.run.E, N: dr.run.N }; dr.prevRun = null;
+    if (S.set.autoGrid && !dr.cal) autoCorrectAtTurn(turn);
+  }
   renderLive();
 }
-const drAcc = () => S.dr ? 0.3 + (S.dr.cal ? 0.06 : S.set.drRate) * S.dr.seg.dist : null;
+const drAcc = () => S.dr ? 0.3 + (S.dr.cal ? 0.06 : S.set.drRate) * S.dr.accDist : null;
+/* ---------- building grid from the point file, and auto-correction at turns ---------- */
+let gridCache = null;
+function getGrid() {
+  if (gridCache && gridCache.pts === S.points && gridCache.axis === S.set.axis) return gridCache.g;
+  gridCache = { pts: S.points, axis: S.set.axis, g: detectGrid() };
+  return gridCache.g;
+}
+function detectGrid() { // rows of points sharing a coordinate along the building axes become grid lines
+  const zc = {};
+  for (const p of S.points) if (isFinite(p.E) && isFinite(p.N)) zc[p.zone] = (zc[p.zone] || 0) + 1;
+  const z = Object.keys(zc).sort((a, b) => zc[b] - zc[a])[0];
+  const P = S.points.filter(p => String(p.zone) === z && isFinite(p.E) && isFinite(p.N));
+  if (P.length < 6) return null;
+  const ax = S.set.axis * RAD, sn = Math.sin(ax), cs = Math.cos(ax), O = { E: P[0].E, N: P[0].N };
+  const us = [], vs = [];
+  for (const p of P) { const dE = p.E - O.E, dN = p.N - O.N; us.push(dE * sn + dN * cs); vs.push(dE * cs - dN * sn); }
+  const lines = vals => {
+    vals.sort((a, b) => a - b);
+    const out = []; let g = [vals[0]];
+    for (let i = 1; i <= vals.length; i++) {
+      if (i < vals.length && vals[i] - g[g.length - 1] <= 0.2) { g.push(vals[i]); continue; }
+      if (g.length >= 3) out.push(g.reduce((a, b) => a + b, 0) / g.length);
+      if (i < vals.length) g = [vals[i]];
+    }
+    const merged = []; // merge rows closer than 1 m (column faces, doubled points)
+    for (const x of out) { if (merged.length && x - merged[merged.length - 1] < 1) merged[merged.length - 1] = (merged[merged.length - 1] + x) / 2; else merged.push(x); }
+    return merged;
+  };
+  const U = lines(us), V = lines(vs);
+  if (U.length < 2 || V.length < 2) return null;
+  const med = a => { const d = a.slice(1).map((x, i) => x - a[i]).sort((x, y) => x - y); return d[Math.floor(d.length / 2)]; };
+  return { O, sn, cs, U, V, su: med(U), sv: med(V) };
+}
+const toAxis = (G, E, N) => { const dE = E - G.O.E, dN = N - G.O.N; return { u: dE * G.sn + dN * G.cs, v: dE * G.cs - dN * G.sn }; };
+const fromAxis = (G, u, v) => ({ E: G.O.E + u * G.sn + v * G.cs, N: G.O.N + u * G.cs - v * G.sn });
+function lanes(lines) { // candidate walkway positions: on the grid lines, midway between them, or both
+  const out = [];
+  if (S.set.lanes !== 'mid') out.push(...lines);
+  if (S.set.lanes !== 'grid') for (let i = 1; i < lines.length; i++) out.push((lines[i - 1] + lines[i]) / 2);
+  return out.sort((a, b) => a - b);
+}
+function nearestLane(cands, x) { // nearest walkway and the distance to its neighbours, which sets how safe a snap is
+  let bi = 0; for (let i = 1; i < cands.length; i++) if (Math.abs(cands[i] - x) < Math.abs(cands[bi] - x)) bi = i;
+  const gaps = []; if (bi > 0) gaps.push(cands[bi] - cands[bi - 1]); if (bi < cands.length - 1) gaps.push(cands[bi + 1] - cands[bi]);
+  return { c: cands[bi], sp: gaps.length ? Math.min(...gaps) : Infinity, inside: x >= cands[0] - 2 && x <= cands[cands.length - 1] + 2 };
+}
+function autoCorrectAtTurn(turn) {
+  const dr = S.dr, G = getGrid(); if (!G) return;
+  const p = toAxis(G, turn.E, turn.N), acc = drAcc();
+  // walking along axis k even means moving along u (on a line of constant v); odd means along v (constant u)
+  const fam = k => k % 2 === 0 ? { key: 'v', lines: G.V } : { key: 'u', lines: G.U };
+  let du = 0, dv = 0, fixed = 0, unsure = false;
+  for (const k of [turn.kPrev, turn.kNew]) {
+    const f = fam(k), cands = lanes(f.lines); if (cands.length < 2) continue;
+    const n = nearestLane(cands, p[f.key]);
+    if (!n.inside) continue;
+    if (acc > 0.35 * n.sp) { unsure = true; continue; } // tracking too loose: could be the wrong walkway
+    const off = n.c - p[f.key];
+    if (Math.abs(off) > 0.25 * n.sp) continue; // didn't turn at a walkway (doorway, detour): leave it
+    if (f.key === 'u') du = off; else dv = off;
+    fixed++;
+  }
+  if (fixed) {
+    const a = fromAxis(G, p.u, p.v), b = fromAxis(G, p.u + du, p.v + dv), cE = b.E - a.E, cN = b.N - a.N, m = Math.hypot(cE, cN);
+    dr.E += cE; dr.N += cN; dr.path.push([dr.E, dr.N]);
+    (dr.autos = dr.autos || []).push([b.E, b.N]); if (dr.autos.length > 200) dr.autos.shift();
+    dr.seg.auto = (dr.seg.auto || 0) + 1;
+    dr.accDist = fixed === 2 ? 3 * S.set.stepLen : dr.accDist * 0.7; // both directions pinned: error restarts from the turn
+    alertFx('snap');
+    if (m >= 0.2) toast(`Auto-corrected ${m.toFixed(1)} m at a grid crossing.`);
+  } else if (unsure && !dr.warnedUnsure) {
+    dr.warnedUnsure = true; alertFx('warn');
+    toast(`Too uncertain to auto-correct (±${acc.toFixed(1)} m). Tap "I'm at" on a known point.`);
+  }
+}
+
 async function startDrSensors() {
   if (drSensors) return true;
   try {
@@ -978,8 +1124,8 @@ function stopTracking() {
 }
 async function beginTracking(t, h0, calTo) {
   setMyLevel(t);
-  S.dr = { E: t.E, N: t.N, zone: t.zone, heading: h0, hRef: h0, yRef: yawNow, steps: 0, anchorId: t.id, cal: calTo || null, run: null,
-    seg: { E0: t.E, N0: t.N, steps: 0, dist: 0, snapped: 0, t0: Date.now() }, path: [[t.E, t.N]] };
+  S.dr = { E: t.E, N: t.N, zone: t.zone, heading: h0, hRef: h0, yRef: yawNow, steps: 0, anchorId: t.id, cal: calTo || null, run: null, prevRun: null, off: 0, accDist: 0, autos: [],
+    seg: { E0: t.E, N0: t.N, steps: 0, dist: 0, snapped: 0, auto: 0, t0: Date.now() }, path: [[t.E, t.N]] };
   if (!(await startDrSensors())) { S.dr = null; }
   if (S.dr && calTo) { setTarget(calTo); toast(`Calibration walk: walk straight to ${calTo} at an even pace, then tap "I'm at ${calTo}".`); return; }
   renderAll();
@@ -988,12 +1134,12 @@ async function beginTracking(t, h0, calTo) {
 function reanchor(t) {
   setMyLevel(t);
   const dr = S.dr, sg = dr.seg, cal = !!dr.cal && dr.cal === t.id, wasCal = !!dr.cal;
-  dr.cal = null; dr.run = null;
+  dr.cal = null;
   let msg = `Re-anchored at ${t.id}.`;
   const dT = [t.E - sg.E0, t.N - sg.N0], dK = [dr.E - sg.E0, dr.N - sg.N0];
   const lT = Math.hypot(...dT), lK = Math.hypot(...dK), err = Math.hypot(dr.E - t.E, dr.N - t.N);
   if (sg.steps > 0 && sg.dist >= 3) logCheck({ kind: cal ? 'calibration' : 'check', from: dr.anchorId, to: t.id, walked: +sg.dist.toFixed(2), straight: +lT.toFixed(2),
-    err: +err.toFixed(2), dE: +(dr.E - t.E).toFixed(2), dN: +(dr.N - t.N).toFixed(2), steps: sg.steps, snappedPct: Math.round(100 * sg.snapped / sg.steps),
+    err: +err.toFixed(2), dE: +(dr.E - t.E).toFixed(2), dN: +(dr.N - t.N).toFixed(2), steps: sg.steps, snappedPct: Math.round(100 * sg.snapped / sg.steps), autoFixes: sg.auto || 0, autoOn: !cal && S.set.autoGrid,
     snap: cal ? false : S.set.snap, stepLen: +S.set.stepLen.toFixed(3), secs: Math.round((Date.now() - (sg.t0 || Date.now())) / 1000), t: Date.now() });
   if (sg.steps >= 10 && lT > 8 && lK > 4) {
     const ratio = lT / lK, turn = angDiff(Math.atan2(dT[0], dT[1]) * 180 / Math.PI, Math.atan2(dK[0], dK[1]) * 180 / Math.PI);
@@ -1001,11 +1147,15 @@ function reanchor(t) {
       if (ratio > 0.6 && ratio < 1.6 && Math.abs(turn) < 45) {
         S.set.stepLen = Math.min(1.1, Math.max(0.4, S.set.stepLen * ratio)); saveSet();
         dr.hRef = norm360(dr.hRef + turn); dr.heading = norm360(dr.heading + turn);
+        alertFx('ok');
         msg = `Calibrated over ${lT.toFixed(0)} m: step length ${S.set.stepLen.toFixed(2)} m, direction ${turn >= 0 ? '+' : ''}${turn.toFixed(1)}°. Tracking continues from ${t.id}.`;
-      } else msg = `Calibration skipped: the walk measured ${lK.toFixed(0)} m against ${lT.toFixed(0)} m. Walk straight at an even pace and try again. Tracking continues from ${t.id}.`;
+      } else {
+        alertFx('warn');
+        msg = `Calibration skipped: the walk measured ${lK.toFixed(0)} m against ${lT.toFixed(0)} m. Walk straight at an even pace and try again. Tracking continues from ${t.id}.`;
+      }
     } else {
       msg += ` Tracking was ${err.toFixed(1)} m off after ${sg.dist.toFixed(0)} m.`;
-      S.set.drRate = Math.min(0.15, Math.max(0.015, 0.7 * S.set.drRate + 0.3 * 1.3 * err / sg.dist)); saveSet(); // error estimate learns from real misclosures
+      if (!sg.auto) { S.set.drRate = Math.min(0.15, Math.max(0.015, 0.7 * S.set.drRate + 0.3 * 1.3 * err / sg.dist)); saveSet(); } // error estimate learns from real misclosures (legs without auto-corrections)
       const fixes = [];
       if (ratio > 0.6 && ratio < 1.6 && Math.abs(ratio - 1) > 0.03) {
         S.set.stepLen = Math.min(1.1, Math.max(0.4, S.set.stepLen * (1 + 0.5 * (ratio - 1)))); saveSet();
@@ -1016,7 +1166,8 @@ function reanchor(t) {
     }
   } else if (wasCal) msg = `Calibration needs a straight walk of 8 m or more. Tracking continues from ${t.id} with the direction you faced.`;
   dr.E = t.E; dr.N = t.N; dr.zone = t.zone; dr.anchorId = t.id;
-  dr.seg = { E0: t.E, N0: t.N, steps: 0, dist: 0, snapped: 0, t0: Date.now() }; dr.path.push([t.E, t.N]);
+  dr.seg = { E0: t.E, N0: t.N, steps: 0, dist: 0, snapped: 0, auto: 0, t0: Date.now() }; dr.path.push([t.E, t.N]);
+  dr.accDist = 0; dr.run = null; dr.prevRun = null; dr.warnedUnsure = false;
   renderAll(); toast(msg);
 }
 let dirFor = null;
@@ -1085,7 +1236,7 @@ document.addEventListener('click', e => {
 
 /* ---------- target helpers ---------- */
 const targetPt = () => S.points.find(p => p.id === S.target) || null;
-function setTarget(id) { S.target = id; store.set('target', id); S.zoom = 1; renderAll(); }
+function setTarget(id) { S.target = id; store.set('target', id); S.zoom = 1; S.view = null; renderAll(); }
 function myGrid(zone) {
   if (S.dr) return { E: S.dr.E, N: S.dr.N, zone: S.dr.zone, tracked: true };
   if (!S.fix) return null;
@@ -1138,7 +1289,9 @@ function renderTarget() {
     const dE = t.E - g.E, dN = t.N - g.N, dist = Math.hypot(dE, dN);
     const [dv, du] = distParts(dist);
     const ea = S.dr ? drAcc() : effAcc();
-    if (S.dr ? dist <= Math.max(ea, 0.5) : dist <= Math.max(S.fix.acc, arriveFloor()) && fixState() === 'live') box.classList.add('arrived');
+    const thrA = S.dr ? Math.max(ea, 0.5) : Math.max(S.fix.acc, arriveFloor());
+    if (dist <= thrA && (S.dr || fixState() === 'live')) box.classList.add('arrived');
+    noteProximity(t.id, dist, thrA, !!S.dr || fixState() === 'live');
     body = `<div class="t-body"><svg class="dial" id="dial" viewBox="-80 -80 160 160" role="img" aria-label="Direction to point"></svg>
       <div><div class="dist">${dv}<small>${du}</small></div>
       <div class="deltas"><div>${fmtDist(Math.abs(dN))} <span>${D.local ? 'along local ' + (dN >= 0 ? '+N' : '−N') : dN >= 0 ? 'north' : 'south'}</span></div><div>${fmtDist(Math.abs(dE))} <span>${D.local ? 'along local ' + (dE >= 0 ? '+E' : '−E') : dE >= 0 ? 'east' : 'west'}</span></div></div></div></div>`;
@@ -1275,6 +1428,14 @@ function renderSetup() {
   $('siteinfo').textContent = S.site ? `Loaded site: ${S.site.name}${S.site.created ? ', setup from ' + new Date(S.site.created).toLocaleDateString() : ''}.` : 'No site setup loaded on this phone.';
   if (document.activeElement !== $('steplen')) $('steplen').value = S.set.stepLen.toFixed(2);
   $('snap').checked = S.set.snap;
+  $('autogrid').checked = S.set.autoGrid; $('showgrid').checked = S.set.showGrid;
+  document.querySelectorAll('[data-lanes]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lanes === S.set.lanes)));
+  const G = S.points.length ? getGrid() : null;
+  $('gridnote').textContent = !S.points.length ? 'Import a point file to find its grid.' : G
+    ? `Found ${G.U.length} × ${G.V.length} grid lines, spacing about ${G.su.toFixed(1)} × ${G.sv.toFixed(1)} m, along the building axis above.`
+    : 'No grid found: the point file needs rows of at least 3 points on the same line, along the building axis.';
+  $('vib').checked = S.set.vib; $('sound').checked = S.set.sound; $('prox').checked = S.set.prox;
+  $('vibnote').textContent = canVibrate() ? 'Buzzes on arrival, auto-corrections and warnings.' : 'This browser cannot vibrate (iPhones cannot). Use sound instead.';
   $('extinfo').textContent = !navigator.bluetooth ? 'This browser cannot use Bluetooth. Open the app in Chrome on Android.'
     : extLine() || (S.set.extName ? `Not connected. Last used: ${S.set.extName}.` : 'No receiver connected.');
   $('extconnect').disabled = S.ext.state === 'connecting'; $('extdisc').disabled = S.ext.state === 'off' && !S.ext.want;
@@ -1398,14 +1559,36 @@ function drawPlotGrid(ctx, W, H, C) {
   if (t) reach = Math.max(reach, Math.hypot(t.E - me.E, t.N - me.N) * 1.2);
   reach = Math.max(reach, drAcc() * 1.3) / S.zoom;
   const ppm = (Math.min(W, H) / 2 - 18) / reach, cx = W / 2, cy = H / 2;
-  const P = (E, N) => [cx + (E - me.E) * ppm, cy - (N - me.N) * ppm];
+  const free = S.view && S.view.kind === 'dr', cE = free ? S.view.E : me.E, cN = free ? S.view.N : me.N;
+  S._map = { kind: 'dr', ppm, E: cE, N: cN };
+  const P = (E, N) => [cx + (E - cE) * ppm, cy - (N - cN) * ppm];
+  const [mx, my] = P(me.E, me.N);
   const steps = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
   const step = steps.find(v => v * ppm > 45) || 1000;
   ctx.strokeStyle = C('--line'); ctx.lineWidth = 1;
-  for (let r = step; r * ppm < Math.hypot(W, H) / 2; r += step) { ctx.beginPath(); ctx.arc(cx, cy, r * ppm, 0, 7); ctx.stroke(); }
-  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
-  ctx.fillStyle = C('--muted'); ctx.font = `600 13px ${C('--font-c')}`; ctx.fillText(isLocal() ? 'local N' : 'grid N', cx + 5, 14);
-  $('scale').textContent = `Rings every ${step} m, indoor tracking`;
+  for (let r = step; r * ppm < Math.hypot(W, H) / 2 + Math.hypot(mx - cx, my - cy); r += step) { ctx.beginPath(); ctx.arc(mx, my, r * ppm, 0, 7); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(mx, 0); ctx.lineTo(mx, H); ctx.moveTo(0, my); ctx.lineTo(W, my); ctx.stroke();
+  ctx.fillStyle = C('--muted'); ctx.font = `600 13px ${C('--font-c')}`; ctx.fillText(isLocal() ? 'local N' : 'grid N', mx + 5, 14);
+  $('scale').textContent = `Rings every ${step} m, indoor tracking${free ? ', map moved' : ''}`;
+  const G = S.set.showGrid ? getGrid() : null;
+  if (G) { // building grid lines (and walkways between them, dotted)
+    const span = Math.hypot(W, H) / ppm, c = toAxis(G, cE, cN);
+    const seg = (u1, v1, u2, v2) => { const a = fromAxis(G, u1, v1), b = fromAxis(G, u2, v2), [x1, y1] = P(a.E, a.N), [x2, y2] = P(b.E, b.N); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); };
+    const uLo = Math.max(G.U[0] - 5, c.u - span), uHi = Math.min(G.U[G.U.length - 1] + 5, c.u + span);
+    const vLo = Math.max(G.V[0] - 5, c.v - span), vHi = Math.min(G.V[G.V.length - 1] + 5, c.v + span);
+    ctx.strokeStyle = C('--muted'); ctx.globalAlpha = .35; ctx.lineWidth = 1; ctx.beginPath();
+    for (const v of G.V) if (Math.abs(v - c.v) < span) seg(uLo, v, uHi, v);
+    for (const u of G.U) if (Math.abs(u - c.u) < span) seg(u, vLo, u, vHi);
+    ctx.stroke();
+    if (S.set.autoGrid && S.set.lanes !== 'grid') {
+      ctx.setLineDash([2, 6]); ctx.beginPath();
+      for (let i = 1; i < G.V.length; i++) { const v = (G.V[i - 1] + G.V[i]) / 2; if (Math.abs(v - c.v) < span) seg(uLo, v, uHi, v); }
+      for (let i = 1; i < G.U.length; i++) { const u = (G.U[i - 1] + G.U[i]) / 2; if (Math.abs(u - c.u) < span) seg(u, vLo, u, vHi); }
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.globalAlpha = 1;
+  }
+  if (me.autos && me.autos.length) { ctx.strokeStyle = C('--live'); ctx.lineWidth = 2; for (const [E, N] of me.autos) { const [x, y] = P(E, N); ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.stroke(); } }
   if (me.path.length > 1) { ctx.strokeStyle = C('--me'); ctx.globalAlpha = .5; ctx.lineWidth = 2; ctx.beginPath(); me.path.forEach(([E, N], i) => { const [x, y] = P(E, N); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke(); ctx.globalAlpha = 1; }
   let drawn = 0;
   for (const p of S.points) {
@@ -1419,14 +1602,14 @@ function drawPlotGrid(ctx, W, H, C) {
   }
   if (t) {
     const [x, y] = P(t.E, t.N);
-    ctx.setLineDash([6, 5]); ctx.strokeStyle = C('--flag'); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.setLineDash([6, 5]); ctx.strokeStyle = C('--flag'); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(x, y); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle = C('--flag'); ctx.beginPath(); ctx.arc(x, y, 8, 0, 7); ctx.fill();
     ctx.font = `700 15px ${C('--font-c')}`; ctx.fillText(t.id, x + 11, y - 9);
   }
-  ctx.fillStyle = C('--me'); ctx.globalAlpha = .13; ctx.beginPath(); ctx.arc(cx, cy, Math.max(6, drAcc() * ppm), 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+  ctx.fillStyle = C('--me'); ctx.globalAlpha = .13; ctx.beginPath(); ctx.arc(mx, my, Math.max(6, drAcc() * ppm), 0, 7); ctx.fill(); ctx.globalAlpha = 1;
   const h = me.heading * Math.PI / 180; // heading wedge
-  ctx.fillStyle = C('--me'); ctx.beginPath(); ctx.moveTo(cx + 16 * Math.sin(h), cy - 16 * Math.cos(h)); ctx.lineTo(cx + 7 * Math.sin(h + 2.4), cy - 7 * Math.cos(h + 2.4)); ctx.lineTo(cx + 7 * Math.sin(h - 2.4), cy - 7 * Math.cos(h - 2.4)); ctx.closePath(); ctx.fill();
-  ctx.beginPath(); ctx.arc(cx, cy, 7, 0, 7); ctx.fill(); ctx.strokeStyle = C('--surface'); ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.fillStyle = C('--me'); ctx.beginPath(); ctx.moveTo(mx + 16 * Math.sin(h), my - 16 * Math.cos(h)); ctx.lineTo(mx + 7 * Math.sin(h + 2.4), my - 7 * Math.cos(h + 2.4)); ctx.lineTo(mx + 7 * Math.sin(h - 2.4), my - 7 * Math.cos(h - 2.4)); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.arc(mx, my, 7, 0, 7); ctx.fill(); ctx.strokeStyle = C('--surface'); ctx.lineWidth = 2.5; ctx.stroke();
 }
 function drawPlot() {
   const cv = $('plot'); if (S.tab !== 'nav') return;
@@ -1436,9 +1619,13 @@ function drawPlot() {
   const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const css = getComputedStyle(document.documentElement), C = n => css.getPropertyValue(n).trim();
   ctx.clearRect(0, 0, W, H);
+  if (S.view && S.view.kind !== (S.dr ? 'dr' : 'gps')) S.view = null; // switched between GPS and indoor tracking: follow again
+  $('zme').hidden = !S.view;
   if (S.dr) return drawPlotGrid(ctx, W, H, C);
   const t = targetPt();
-  const origin = S.fix || (t && t.lat != null ? t : null) || S.points.find(p => p.lat != null);
+  const auto = S.fix || (t && t.lat != null ? t : null) || S.points.find(p => p.lat != null);
+  const free = S.view && S.view.kind === 'gps';
+  const origin = free ? { lat: S.view.lat, lon: S.view.lon } : auto;
   if (!origin) { ctx.fillStyle = C('--muted'); ctx.font = `15px ${C('--font')}`; ctx.fillText('Your position and points appear here.', 16, H / 2); $('scale').textContent = ''; return; }
   let reach = 10;
   if (S.fix && t && t.lat != null) reach = Math.max(reach, haversine(S.fix, t) * 1.2);
@@ -1446,15 +1633,17 @@ function drawPlot() {
   reach /= S.zoom;
   const ppm = (Math.min(W, H) / 2 - 18) / reach;
   const cx = W / 2, cy = H / 2;
+  S._map = { kind: 'gps', ppm, lat: origin.lat, lon: origin.lon };
   const P = p => { const e = enu(origin, p); return [cx + e.x * ppm, cy - e.y * ppm]; };
+  const [rx, ry] = S.fix ? P(S.fix) : [cx, cy]; // rings follow you, not the map centre
   // range rings at a round step
   const steps = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
   const step = steps.find(s => s * ppm > 45) || 50000;
   ctx.strokeStyle = C('--line'); ctx.lineWidth = 1;
-  for (let r = step; r * ppm < Math.hypot(W, H) / 2; r += step) { ctx.beginPath(); ctx.arc(cx, cy, r * ppm, 0, 7); ctx.stroke(); }
-  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
-  ctx.fillStyle = C('--muted'); ctx.font = `600 13px ${C('--font-c')}`; ctx.fillText('N', cx + 5, 14);
-  $('scale').textContent = `Rings every ${step >= 1000 ? step / 1000 + ' km' : step + ' m'}`;
+  for (let r = step; r * ppm < Math.hypot(W, H) / 2 + Math.hypot(rx - cx, ry - cy); r += step) { ctx.beginPath(); ctx.arc(rx, ry, r * ppm, 0, 7); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(rx, 0); ctx.lineTo(rx, H); ctx.moveTo(0, ry); ctx.lineTo(W, ry); ctx.stroke();
+  ctx.fillStyle = C('--muted'); ctx.font = `600 13px ${C('--font-c')}`; ctx.fillText('N', rx + 5, 14);
+  $('scale').textContent = `Rings every ${step >= 1000 ? step / 1000 + ' km' : step + ' m'}${free ? ', map moved' : ''}`;
   // track
   if (S.track.length > 1) {
     ctx.strokeStyle = C('--me'); ctx.globalAlpha = .45; ctx.lineWidth = 2; ctx.beginPath();
@@ -1786,6 +1975,17 @@ $('extconnect').onclick = extConnect;
 $('extdisc').onclick = extDisconnect;
 $('extquick').onclick = extConnect;
 $('snap').onchange = e => { S.set.snap = e.target.checked; saveSet(); renderSetup(); };
+$('autogrid').onchange = e => { S.set.autoGrid = e.target.checked; saveSet(); renderSetup(); if (S.set.autoGrid && !getGrid()) toast('No grid found in this point file, so nothing will be auto-corrected.'); };
+$('showgrid').onchange = e => { S.set.showGrid = e.target.checked; saveSet(); renderAll(); };
+document.querySelectorAll('[data-lanes]').forEach(b => b.onclick = () => { S.set.lanes = b.dataset.lanes; saveSet(); renderSetup(); });
+$('vib').onchange = e => { S.set.vib = e.target.checked; saveSet(); if (S.set.vib) alertFx('pulse'); };
+$('sound').onchange = e => { S.set.sound = e.target.checked; saveSet(); if (S.set.sound) beep(FX.pulse.s); };
+$('prox').onchange = e => { S.set.prox = e.target.checked; saveSet(); };
+$('fxtest').onclick = () => {
+  if (!S.set.vib && !S.set.sound) { toast('Vibration and sound are both off.'); return; }
+  const seq = ['arrive', 'snap', 'warn']; seq.forEach((k, i) => setTimeout(() => alertFx(k), i * 1300));
+  toast('Arrival, auto-correction, warning.');
+};
 $('axis').addEventListener('change', e => { const v = pnum(e.target.value); if (isFinite(v)) { S.set.axis = normAxis(v); saveSet(); $('axisnote').textContent = ''; } else toast('Enter the axis bearing in degrees, for example 0 or 37.5.'); renderSetup(); });
 $('axisdetect').onclick = () => {
   if (!S.points.length) { toast('Import the point file first.'); return; }
@@ -1798,14 +1998,44 @@ $('axisdetect').onclick = () => {
 };
 $('exchecks').onclick = () => {
   if (!S.checks.length) { toast('No indoor checks yet. Track indoors and tap "I\'m at" on known points.'); return; }
-  const lines = ['kind;from;to;walked_m;straight_line_m;misclosure_m;dE_m;dN_m;error_pct_of_walked;steps;snapped_pct;snap_on;step_length_m;seconds;time_utc'];
-  for (const c of S.checks) lines.push([c.kind, c.from, c.to, c.walked, c.straight, c.err, c.dE, c.dN, (100 * c.err / c.walked).toFixed(1), c.steps, c.snappedPct, c.snap ? 'yes' : 'no', c.stepLen, c.secs, iso(c.t)].join(';'));
+  const lines = ['kind;from;to;walked_m;straight_line_m;misclosure_m;dE_m;dN_m;error_pct_of_walked;steps;snapped_pct;snap_on;auto_correct_on;auto_corrections;step_length_m;seconds;time_utc'];
+  for (const c of S.checks) lines.push([c.kind, c.from, c.to, c.walked, c.straight, c.err, c.dE, c.dN, (100 * c.err / c.walked).toFixed(1), c.steps, c.snappedPct, c.snap ? 'yes' : 'no', c.autoOn ? 'yes' : 'no', c.autoFixes || 0, c.stepLen, c.secs, iso(c.t)].join(';'));
   exportText('indoor-checks.csv', lines.join('\n'));
 };
 $('steplen').addEventListener('change', e => { const v = pnum(e.target.value); if (v >= 0.3 && v <= 1.2) { S.set.stepLen = v; saveSet(); } else { toast('Enter a step length between 0.30 and 1.20 m.'); } renderSetup(); });
 $('zin').onclick = () => { S.zoom *= 2; drawPlot(); };
 $('zout').onclick = () => { S.zoom /= 2; drawPlot(); };
-$('zfit').onclick = () => { S.zoom = 1; drawPlot(); };
+$('zfit').onclick = () => { S.zoom = 1; S.view = null; drawPlot(); };
+$('zme').onclick = () => { S.view = null; drawPlot(); };
+(() => { // drag to move the map, pinch or wheel to zoom
+  const cv = $('plot'), ptrs = new Map(); let pinch = null, start = null, dragging = false;
+  const dist = () => { const [a, b] = [...ptrs.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
+  function panBy(dx, dy) {
+    const m = S._map; if (!m) return;
+    const ex = -dx / m.ppm, ny = dy / m.ppm; // finger right = look further west
+    if (!S.view) S.view = m.kind === 'dr' ? { kind: 'dr', E: m.E, N: m.N } : { kind: 'gps', lat: m.lat, lon: m.lon };
+    if (S.view.kind === 'dr') { S.view.E += ex; S.view.N += ny; }
+    else { const R = 6371008.8; S.view.lat += ny / (R * RAD); S.view.lon += ex / (R * RAD * Math.cos(S.view.lat * RAD)); }
+    drawPlot();
+  }
+  cv.addEventListener('pointerdown', e => {
+    try { cv.setPointerCapture(e.pointerId); } catch { }
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 1) { start = { x: e.clientX, y: e.clientY }; dragging = false; }
+    if (ptrs.size === 2) pinch = { d: dist(), zoom: S.zoom };
+  });
+  cv.addEventListener('pointermove', e => {
+    const prev = ptrs.get(e.pointerId); if (!prev) return;
+    const cur = { x: e.clientX, y: e.clientY }; ptrs.set(e.pointerId, cur);
+    if (ptrs.size === 2 && pinch && pinch.d > 10) { S.zoom = Math.min(500, Math.max(0.02, pinch.zoom * dist() / pinch.d)); drawPlot(); return; }
+    if (ptrs.size !== 1) return;
+    if (!dragging && Math.hypot(cur.x - start.x, cur.y - start.y) < 6) return; // a tap, not a drag
+    dragging = true; panBy(cur.x - prev.x, cur.y - prev.y);
+  });
+  const end = e => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; if (ptrs.size === 1) { const [p] = ptrs.values(); start = { ...p }; } };
+  cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+  cv.addEventListener('wheel', e => { e.preventDefault(); S.zoom = Math.min(500, Math.max(0.02, S.zoom * (e.deltaY < 0 ? 1.25 : 0.8))); drawPlot(); }, { passive: false });
+})();
 window.addEventListener('resize', drawPlot);
 window.addEventListener('pagehide', () => store.set('track', S.track));
 
