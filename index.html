@@ -276,6 +276,7 @@ table.res tr.bad td{color:var(--lost);font-weight:700}
       <h2>GNSS receiver</h2>
       <p class="note" style="margin:0 0 10px" id="extinfo"></p>
       <div class="row"><button class="btn primary" id="extconnect">Connect receiver</button><button class="btn" id="extdisc">Disconnect</button></div>
+      <div class="toggle" style="margin-top:6px"><div>Continue indoors when RTK is lost<small>While RTK is fixed, the app learns your walking direction and step length. When the fix drops as you walk into a building, indoor tracking takes over from the last fixed position, and closes the loop when you are back on RTK. Only works with a receiver; phone GPS is never affected.</small></div><input type="checkbox" class="sw" id="handover"></div>
       <p class="note">For an RTK receiver with Bluetooth LE, such as a SparkFun RTK device. Set its Bluetooth mode to BLE or Dual, and let it fetch corrections itself (NTRIP client over your phone's hotspot). While it sends positions, the app uses them instead of the phone's GPS, and switches back to the phone if the receiver loses its fix. Needs Chrome on Android.</p>
     </div>
     <div class="block">
@@ -691,6 +692,7 @@ function onPos(p, src) {
     }
   }
   if (S.logging) S.logging.samples.push({ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc, src: S.fix.src, q: S.fix.q });
+  if (src === 'ext') hoOnFix();
   if (S.calib) S.calib.samples.push({ lat: S.fix.lat, lon: S.fix.lon, acc: S.fix.acc });
   renderLive();
 }
@@ -833,7 +835,9 @@ function extLine() { // one-line receiver status for the Setup and position scre
   const parts = [QTXT[x.q] || 'No fix', `${x.sats || 0} satellites`];
   if (x.age != null && isFinite(x.age)) parts.push(`corrections ${x.age.toFixed(0)} s old`);
   else if (x.q && x.q !== 4 && x.q !== 5) parts.push('no corrections');
-  return `${x.name}: ${parts.join(', ')}.`;
+  let tail = '';
+  if (S.set.handover && !S.dr) tail = hoReady() ? ' Ready to continue indoors.' : x.q === 4 ? ' Walk 15 m straight to prepare the indoor handover.' : '';
+  return `${x.name}: ${parts.join(', ')}.${tail}`;
 }
 
 /* ---------- vibration and sound alerts ---------- */
@@ -951,6 +955,7 @@ S.checks = store.get('checks', []);
 S.set.autoGrid = !!S.set.autoGrid; // experimental: correct position at turns on the building grid
 if (!['grid', 'mid', 'both'].includes(S.set.lanes)) S.set.lanes = 'both'; // where walkways run relative to the grid lines
 S.set.showGrid = S.set.showGrid !== false;
+S.set.handover = S.set.handover !== false; // continue indoors automatically when the receiver's RTK fix is lost
 S.set.vib = S.set.vib !== false; S.set.sound = !!S.set.sound; S.set.prox = S.set.prox !== false;
 const SNAP_TOL = 12; // degrees either side of a building axis
 const fmtDeg = a => `${a.toFixed(2).replace(/\.?0+$/, '')}°`;
@@ -1004,7 +1009,7 @@ function onMotion(e) {
   else if (!armed && d < 0.3) armed = true;
 }
 function onStep() {
-  if (!S.dr) return;
+  if (!S.dr) { hoStep(); return; }
   const dr = S.dr, L = S.set.stepLen;
   let hUse = dr.heading;
   const s = snapHeading(dr.heading), onAxis = Math.abs(s.d) <= SNAP_TOL;
@@ -1118,8 +1123,9 @@ async function startDrSensors() {
   return true;
 }
 function stopTracking() {
+  if (S.dr && S.dr.hand) { HO.lastFix = null; HO.fixes = []; HO.stepBuf = []; } // manual stop: don't hand over again straight away
   S.dr = null;
-  if (drSensors) { window.removeEventListener('devicemotion', onMotion); window.removeEventListener('deviceorientation', onRelOrient); drSensors = false; }
+  if (drSensors && !hoWantsSensors()) { window.removeEventListener('devicemotion', onMotion); window.removeEventListener('deviceorientation', onRelOrient); drSensors = false; }
   renderAll();
 }
 async function beginTracking(t, h0, calTo) {
@@ -1234,6 +1240,72 @@ document.addEventListener('click', e => {
   else if (act === 'anchor') reanchor(t);
 });
 
+/* ---------- RTK to indoor handover: learn heading and step length on RTK fixed, take over when the fix is lost ---------- */
+const HO = { fixes: [], steps: 0, stepBuf: [], lastFix: null, learned: null, lostSince: null, backSince: null, nagged: false };
+const hoActive = () => S.set.handover && S.ext.state === 'on';
+const hoWantsSensors = () => hoActive() && !!HO.lastFix;
+const hoZone = () => { const D = curD(); return D && D.gk ? ((targetPt() || S.points[0] || {}).zone) : undefined; };
+const hoReady = () => !!(HO.learned && Date.now() - HO.learned.t < 90000 && HO.lastFix && Date.now() - HO.lastFix.t < 60000);
+function hoStep() { if (!hoActive() || !HO.lastFix) return; HO.steps++; HO.stepBuf.push(yawNow); if (HO.stepBuf.length > 400) HO.stepBuf.shift(); }
+function circMean(a) { let c = 0, s = 0; for (const x of a) { c += Math.cos(x * RAD); s += Math.sin(x * RAD); } return norm360(Math.atan2(s, c) / RAD); }
+function hoOnFix() { // called for every receiver position
+  if (!hoActive() || !S.fix || S.fix.src !== 'ext') return;
+  const fixed = S.fix.q === 4 && S.fix.acc < 0.15;
+  if (S.dr && S.dr.hand) { // tracking indoors after a handover: close it once RTK is fixed again for 3 s
+    if (!fixed) { HO.backSince = null; return; }
+    HO.backSince = HO.backSince || Date.now();
+    if (Date.now() - HO.backSince >= 3000) { const g = fromWGS(S.fix.lat, S.fix.lon, hoZone()); if (g && isFinite(g.E)) hoClose(g); }
+    return;
+  }
+  if (S.dr || !fixed) return;
+  const g = fromWGS(S.fix.lat, S.fix.lon, hoZone()); if (!g || !isFinite(g.E)) return;
+  if (!drSensors && !HO.sensorTried) { HO.sensorTried = true; startDrSensors(); }
+  const now = Date.now(), f = { E: g.E, N: g.N, zone: g.zone, t: now, steps: HO.steps, yaw: yawNow };
+  HO.fixes.push(f); HO.fixes = HO.fixes.filter(x => now - x.t < 30000);
+  HO.lastFix = f; HO.stepBuf = []; HO.lostSince = null; HO.nagged = false;
+  // learn from the latest straight stretch of at least 10 m
+  for (let i = 0; i < HO.fixes.length - 2; i++) {
+    const a = HO.fixes[i], w = HO.fixes.slice(i), disp = Math.hypot(f.E - a.E, f.N - a.N);
+    if (disp < 10) break;
+    let path = 0; for (let k = 1; k < w.length; k++) path += Math.hypot(w[k].E - w[k - 1].E, w[k].N - w[k - 1].N);
+    const steps = f.steps - a.steps, yaws = w.map(x => x.yaw).filter(y => y != null);
+    if (disp / path < 0.95 || steps < 10 || yaws.length < 3) continue;
+    const my = circMean(yaws); if (yaws.some(y => Math.abs(angDiff(y, my)) > 10)) continue; // phone direction steady
+    HO.learned = { hRef: norm360(Math.atan2(f.E - a.E, f.N - a.N) / RAD), yRef: my, t: now };
+    const L = disp / steps; if (L > 0.4 && L < 1.1) { S.set.stepLen = 0.8 * S.set.stepLen + 0.2 * L; saveSet(); }
+    break;
+  }
+}
+function hoStart() {
+  const f = HO.lastFix, l = HO.learned;
+  S.dr = { E: f.E, N: f.N, zone: f.zone, heading: l.hRef, hRef: l.hRef, yRef: l.yRef, steps: 0, anchorId: 'RTK', hand: true, cal: null, run: null, prevRun: null, off: 0, accDist: 0, autos: [],
+    seg: { E0: f.E, N0: f.N, steps: 0, dist: 0, snapped: 0, auto: 0, t0: f.t }, path: [[f.E, f.N]] };
+  for (const y of HO.stepBuf) { S.dr.heading = norm360(l.hRef + angDiff(y == null ? l.yRef : y, l.yRef)); onStep(); } // steps since the last fix
+  if (yawNow != null) S.dr.heading = norm360(l.hRef + angDiff(yawNow, l.yRef));
+  HO.stepBuf = []; HO.backSince = null;
+  alertFx('snap'); toast('RTK fix lost. Continuing with indoor tracking from the last fixed position.'); renderAll();
+}
+function hoClose(g) {
+  const dr = S.dr, sg = dr.seg, err = Math.hypot(dr.E - g.E, dr.N - g.N);
+  if (sg.steps > 0 && sg.dist >= 3) {
+    logCheck({ kind: 'handover', from: 'RTK', to: 'RTK', walked: +sg.dist.toFixed(2), straight: +Math.hypot(g.E - sg.E0, g.N - sg.N0).toFixed(2), err: +err.toFixed(2),
+      dE: +(dr.E - g.E).toFixed(2), dN: +(dr.N - g.N).toFixed(2), steps: sg.steps, snappedPct: Math.round(100 * sg.snapped / sg.steps), autoFixes: sg.auto || 0, autoOn: S.set.autoGrid,
+      snap: S.set.snap, stepLen: +S.set.stepLen.toFixed(3), secs: Math.round((Date.now() - sg.t0) / 1000), t: Date.now() });
+    if (sg.dist >= 8 && !sg.auto) { S.set.drRate = Math.min(0.15, Math.max(0.015, 0.7 * S.set.drRate + 0.3 * 1.3 * err / sg.dist)); saveSet(); }
+  }
+  const walked = sg.dist; S.dr = null; HO.fixes = []; HO.lastFix = null; HO.backSince = null;
+  alertFx('ok'); toast(`Back on RTK. The indoor track closed ${err.toFixed(1)} m off after ${walked.toFixed(0)} m.`); renderAll();
+}
+setInterval(() => { // watch for the fix being lost
+  if (!hoActive() || S.dr || !HO.lastFix) { HO.lostSince = null; return; }
+  const ok = S.fix && S.fix.src === 'ext' && S.fix.q === 4 && Date.now() - S.ext.posT < 2000;
+  if (ok) { HO.lostSince = null; return; }
+  HO.lostSince = HO.lostSince || Date.now();
+  if (Date.now() - HO.lostSince < 3000) return;
+  if (hoReady() && HO.stepBuf.length >= 2) hoStart(); // only if you are walking
+  else if (!hoReady() && HO.stepBuf.length >= 4 && !HO.nagged) { HO.nagged = true; toast('RTK fix lost. Indoor tracking could not take over: walk 15 m straight with RTK fixed first.'); }
+}, 1000);
+
 /* ---------- target helpers ---------- */
 const targetPt = () => S.points.find(p => p.id === S.target) || null;
 function setTarget(id) { S.target = id; store.set('target', id); S.zoom = 1; S.view = null; renderAll(); }
@@ -1248,7 +1320,7 @@ const arriveFloor = () => S.fix && S.fix.src === 'ext' && S.fix.acc < 0.2 ? 0.05
 function renderStatus() {
   if (S.dr) {
     $('fixstate').dataset.s = 'dr';
-    $('fixtext').textContent = S.dr.cal ? `Calibration walk, ${S.dr.seg.steps} steps` : `Indoor tracking, ${S.dr.steps} steps`;
+    $('fixtext').textContent = S.dr.cal ? `Calibration walk, ${S.dr.seg.steps} steps` : S.dr.hand ? `Indoor from RTK, ${S.dr.steps} steps` : `Indoor tracking, ${S.dr.steps} steps`;
     $('acc').innerHTML = `±<b>${drAcc().toFixed(1)}</b> m`;
     return;
   }
@@ -1428,6 +1500,7 @@ function renderSetup() {
   $('siteinfo').textContent = S.site ? `Loaded site: ${S.site.name}${S.site.created ? ', setup from ' + new Date(S.site.created).toLocaleDateString() : ''}.` : 'No site setup loaded on this phone.';
   if (document.activeElement !== $('steplen')) $('steplen').value = S.set.stepLen.toFixed(2);
   $('snap').checked = S.set.snap;
+  $('handover').checked = S.set.handover;
   $('autogrid').checked = S.set.autoGrid; $('showgrid').checked = S.set.showGrid;
   document.querySelectorAll('[data-lanes]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lanes === S.set.lanes)));
   const G = S.points.length ? getGrid() : null;
@@ -1979,6 +2052,7 @@ $('logbtn').onclick = startLog;
 $('extconnect').onclick = extConnect;
 $('extdisc').onclick = extDisconnect;
 $('extquick').onclick = extConnect;
+$('handover').onchange = e => { S.set.handover = e.target.checked; saveSet(); if (!S.set.handover && !S.dr && drSensors) stopTracking(); renderSetup(); };
 $('snap').onchange = e => { S.set.snap = e.target.checked; saveSet(); renderSetup(); };
 $('autogrid').onchange = e => { S.set.autoGrid = e.target.checked; saveSet(); renderSetup(); if (S.set.autoGrid && !getGrid()) toast('No grid found in this point file, so nothing will be auto-corrected.'); };
 $('showgrid').onchange = e => { S.set.showGrid = e.target.checked; saveSet(); renderAll(); };
